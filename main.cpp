@@ -5,8 +5,7 @@
 #include <atomic>
 #include "dcc_manager.h"
 
-#define INTERFACE "wlan0" // Cambia con la tua interfaccia di rete
-#define INTERFACE_RADIOTAP "wlan1" // Cambia con la tua interfaccia di rete per il radio tap
+// Rimosse le macro HARDCODED per le interfacce
 
 // Variabile atomica globale per controllare il ciclo del main
 std::atomic<bool> keep_running{true};
@@ -29,15 +28,28 @@ std::string to_string(DccState state) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Controllo che siano stati passati i parametri corretti
+    // argc deve essere 3 (nome_programma + interfaccia_standard + interfaccia_radiotap)
+    if (argc < 3) {
+        std::cerr << "Errore: Parametri mancanti!" << std::endl;
+        std::cerr << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap>" << std::endl;
+        std::cerr << "Esempio: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
+        return 1;
+    }
+
     // Registriamo il signal handler per intercettare il Ctrl+C
     std::signal(SIGINT, signal_handler);
 
     std::cout << "[MAIN] Avvio del sistema di controllo DCC..." << std::endl;
 
-    std::string interface_name = INTERFACE; // Cambia con la tua interfaccia
-    std::string interface_radiotap = INTERFACE_RADIOTAP; // Cambia con la tua interfaccia radiotap
+    // Assegnazione dei parametri passati da riga di comando
+    std::string interface_name = argv[1]; 
+    std::string interface_radiotap = argv[2]; 
     int initial_interval_ms = 100;
+
+    std::cout << "[MAIN] Interfaccia Rete: " << interface_name << std::endl;
+    std::cout << "[MAIN] Interfaccia Radiotap: " << interface_radiotap << std::endl;
 
     // Istanziamo il manager
     DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms);

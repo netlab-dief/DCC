@@ -102,7 +102,7 @@ void DccManager::dcc_worker_loop() {
                 }
 
                 std::cout << "\033[1;33m[DCC CAMBIO STATO] CBR: " << std::fixed <<  std::setprecision(2) 
-                          << cbr_percent << "% -> Intervallo CAM: " << new_interval     << " ms\033[0m" << std::endl;
+                          << cbr_percent << std::endl;
             }
         }
 
