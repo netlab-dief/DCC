@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
         // Legge i dati dal thread DCC ogni secondo
         float current_cbr = dcc_manager.get_current_cbr();
         DccState current_state = dcc_manager.get_current_state();
-        int current_interval = dcc_manager.get_current_interval_ms();
+        //int current_interval = dcc_manager.get_current_interval_ms();
 
         std::cout << "[MAIN MONITOR] CBR: " << current_cbr 
                   << "% | Stato: " << to_string(current_state) 
