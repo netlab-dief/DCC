@@ -5,12 +5,26 @@ DccManager::DccManager(std::string interface, std::string interface_radiotap, in
       interface_radiotap_(std::move(interface_radiotap)),
       stop_dcc_thread_(false),
       last_known_cbr_(0.0f),
-      current_dcc_state_(DccState::UNKNOWN), // Inizializziamo a UNKNOWN per forzare il primo step di configurazione
+      current_dcc_state_(DccState::UNKNOWN), 
       current_interval_ms_(initial_interval_ms)   
-{}
+{
+    // Inizializzazione Socket UDP per la notifica Cross-Layer
+    sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd_ < 0) {
+        std::cerr << "[DCC ERROR] Impossibile creare il socket UDP per il cross-layer" << std::endl;
+    }
+
+    std::memset(&cam_program_addr_, 0, sizeof(cam_program_addr_));
+    cam_program_addr_.sin_family = AF_INET;
+    cam_program_addr_.sin_port = htons(5555); // Porta d'ascolto sul programma CAM
+    cam_program_addr_.sin_addr.s_addr = inet_addr("127.0.0.1"); // Loopback locale
+}
 
 DccManager::~DccManager() {
     stop();
+    if (sockfd_ >= 0) {
+        close(sockfd_);
+    }
 }
 
 void DccManager::start() {
@@ -19,13 +33,9 @@ void DccManager::start() {
         dcc_thread_ = std::thread(&DccManager::dcc_worker_loop, this);
 
         pthread_t native_handle = dcc_thread_.native_handle();
-
         struct sched_param param;
-        // Impostiamo una priorità Real-Time alta (es. 70).
-        // Il thread principale è attorno a 80, quindi DCC sarà subito dietro.
         param.sched_priority = 70;
         
-        // CORRETTO: Rimosso il doppio posix call duplicato che avevi nell'if
         if (pthread_setschedparam(native_handle, SCHED_FIFO, &param) != 0) {
             std::cerr << "Errore nell'impostazione della priorità del thread DCC" << std::endl;
         }
@@ -52,13 +62,14 @@ int DccManager::get_current_interval_ms() const {
 }
 
 void DccManager::dcc_worker_loop() {
-    const double CBR_LIMIT_ACTIVE_1 = 30.0;      // Oltre il 30% il canale si sta occupando
-    const double CBR_LIMIT_ACTIVE_2 = 40.0;      // Oltre il 45% il canale si sta occupando
-    const double CBR_LIMIT_ACTIVE_3 = 50.0;      // Oltre il 60% il canale si sta occupando
-    const double CBR_LIMIT_RESTRICTIVE = 65.0; // Oltre il 65% siamo in forte congestione
+    const double CBR_LIMIT_ACTIVE_1 = 30.0;      
+    const double CBR_LIMIT_ACTIVE_2 = 40.0;      
+    const double CBR_LIMIT_ACTIVE_3 = 50.0;      
+    const double CBR_LIMIT_RESTRICTIVE = 65.0; 
+    
     TxPowerManager powerManager;
     cbr_reader.setupCBRReader(false, interface_);
-    rate_manager.setup_rate_manager(interface_radiotap_); // <-- Usa l'interfaccia radiotap per il RateManager
+    rate_manager.setup_rate_manager(interface_radiotap_); 
 
     while (!stop_dcc_thread_) {
         cbr_reader.wrapper_start_reading_cbr();
@@ -72,8 +83,7 @@ void DccManager::dcc_worker_loop() {
             DccState new_state = old_state;
             int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
 
-            // Determina solo il nuovo stato
-            // Logica di transizione di stato ETSI DCC
+            // Mappatura degli stati in base al CBR
             if (cbr_percent < CBR_LIMIT_ACTIVE_1) {
                 new_state = DccState::RELAXED;
             } else if (cbr_percent < CBR_LIMIT_ACTIVE_2) {
@@ -86,49 +96,53 @@ void DccManager::dcc_worker_loop() {
                 new_state = DccState::RESTRICTIVE;
             }
 
-            // Adesso al primo ciclo 'old_state' è UNKNOWN e 'new_state' sarà (es.) RELAXED. 
-            // Essendo diversi, entrerà nell'if e configurerà i parametri di rete istantaneamente.
-
-            // Profilo ETSI TDC (Transmit Datarate Control Attivo)
-            // L'MCS in questo caso può essere cambiato simulando il comando sudo iw dev wlan1 set bitrates legacy-5 
-            // Viene usato per cambiare il rate su wlan1, interfaccia utiulizzata per l'invio dei cam.
-            // NON PUO' essere cambiato su wlan0 e usiamo la cosa di fixed_data_rate ma su wlan1 non funziona.
+            // Se lo stato è cambiato (o al primo avvio in UNKNOWN), aggiorna l'hardware e notifica
             if (old_state != new_state) {
-                current_dcc_state_.store(new_state, std::memory_order_relaxed);
-                current_interval_ms_.store(new_interval, std::memory_order_relaxed);
-
+                
+                // Mappatura unificata: Potenza, MCS e Intervallo di silenzio ETSI (T_off)
                 switch (new_state) {
                     case DccState::RELAXED:
-                        powerManager.set_tx_power(interface_, 23); // Massima potenza
-                        //rate_manager.set_fixed_rate(12);
-                        rate_manager.set_fixed_rate_netlink(12); // Imposta il bitrate a 12 Mbps tramite Netlink
+                        new_interval = 50; // Max 20 Hz teorici a livello radio (il CAM si fermerà a 100ms/10Hz)
+                        powerManager.set_tx_power(interface_, 23); 
+                        rate_manager.set_fixed_rate_netlink(12); 
                         break;
                     case DccState::ACTIVE_1:
+                        new_interval = 100; // 10 Hz massimo
                         powerManager.set_tx_power(interface_, 19);
-                        //rate_manager.set_fixed_rate(12);
-                        rate_manager.set_fixed_rate_netlink(12); // Imposta il bitrate a 12 Mbps tramite Netlink
+                        rate_manager.set_fixed_rate_netlink(12); 
                         break;
                     case DccState::ACTIVE_2:
+                        new_interval = 200; // 5 Hz massimo
                         powerManager.set_tx_power(interface_, 16);
-                        //rate_manager.set_fixed_rate(18);
-                        rate_manager.set_fixed_rate_netlink(18); // Imposta il bitrate a 18 Mbps tramite Netlink
+                        rate_manager.set_fixed_rate_netlink(18); 
                         break;
                     case DccState::ACTIVE_3:
+                        new_interval = 400; // 2.5 Hz massimo
                         powerManager.set_tx_power(interface_, 13);
-                        //rate_manager.set_fixed_rate(24);
-                        rate_manager.set_fixed_rate_netlink(24); // Imposta il bitrate a 24 Mbps tramite Netlink
+                        rate_manager.set_fixed_rate_netlink(24); 
                         break;
                     case DccState::RESTRICTIVE:
+                        new_interval = 1000; // 1 Hz minimo (Starvation prevention)
                         powerManager.set_tx_power(interface_, 10);
-                        //rate_manager.set_fixed_rate(24);
-                        rate_manager.set_fixed_rate_netlink(24); // Imposta il bitrate a 24 Mbps tramite Netlink
+                        rate_manager.set_fixed_rate_netlink(24); 
                         break;
                     case DccState::UNKNOWN:
                         break;
                 }
 
-                std::cout << "\033[1;33m[DCC CAMBIO STATO] CBR: " << std::fixed <<  std::setprecision(2) 
-                          << cbr_percent << std::endl;
+                current_dcc_state_.store(new_state, std::memory_order_relaxed);
+                current_interval_ms_.store(new_interval, std::memory_order_relaxed);
+
+                // NOTIFICA CROSS-LAYER AL PROGRAMMA CAM
+                if (sockfd_ >= 0) {
+                    double t_off_to_send = static_cast<double>(new_interval);
+                    sendto(sockfd_, &t_off_to_send, sizeof(t_off_to_send), 0,
+                           (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
+                }
+
+                std::cout << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
+                          << " | CBR: " << std::fixed << std::setprecision(2) << cbr_percent 
+                          << "% | T_off: " << new_interval << "ms\033[0m" << std::endl;
             }
         }
 
