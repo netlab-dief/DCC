@@ -134,9 +134,16 @@ void DccManager::dcc_worker_loop() {
                 current_interval_ms_.store(new_interval, std::memory_order_relaxed);
 
                 // NOTIFICA CROSS-LAYER AL PROGRAMMA CAM
+                //if (sockfd_ >= 0) {
+                //    double t_off_to_send = static_cast<double>(new_interval);
+                //    sendto(sockfd_, &t_off_to_send, sizeof(t_off_to_send), 0,
+                //           (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
+                //}
                 if (sockfd_ >= 0) {
-                    double t_off_to_send = static_cast<double>(new_interval);
-                    sendto(sockfd_, &t_off_to_send, sizeof(t_off_to_send), 0,
+                    // Castiamo l'enum class a un intero a 32 bit per la trasmissione
+                    int32_t state_to_send = static_cast<int32_t>(new_state);
+
+                    sendto(sockfd_, &state_to_send, sizeof(state_to_send), 0,
                            (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
                 }
 
