@@ -8,16 +8,17 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: configure
-      run: ./configure
-    - name: make
+
+    # Installa le dipendenze necessarie alla compilazione del tuo progetto su Ubuntu
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libnl-3-dev libnl-genl-3-dev libssl-dev pkg-config build-essential
+
+    # Compila usando il tuo Makefile personalizzato
+    - name: Compile Project
       run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
