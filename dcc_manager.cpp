@@ -2,10 +2,11 @@
 
 DccManager::DccManager(std::string interface, std::string interface_radiotap, int initial_interval_ms)
     : interface_(std::move(interface)), 
-      interface_radiotap_(std::move(interface_radiotap)), // <--- Inizializza la nuova variabile
-      current_interval_ms_(initial_interval_ms),
-      last_known_cbr_(0.0f),                  
-      current_dcc_state_(DccState::UNKNOWN)   
+      interface_radiotap_(std::move(interface_radiotap)),
+      stop_dcc_thread_(false),
+      last_known_cbr_(0.0f),
+      current_dcc_state_(DccState::UNKNOWN), // Inizializziamo a UNKNOWN per forzare il primo step di configurazione
+      current_interval_ms_(initial_interval_ms)   
 {}
 
 DccManager::~DccManager() {
@@ -51,8 +52,10 @@ int DccManager::get_current_interval_ms() const {
 }
 
 void DccManager::dcc_worker_loop() {
-    const double CBR_LIMIT_ACTIVE = 30.0;      // Oltre il 30% il canale si sta occupando
-    const double CBR_LIMIT_RESTRICTIVE = 60.0; // Oltre il 60% siamo in forte congestione
+    const double CBR_LIMIT_ACTIVE_1 = 30.0;      // Oltre il 30% il canale si sta occupando
+    const double CBR_LIMIT_ACTIVE_2 = 40.0;      // Oltre il 45% il canale si sta occupando
+    const double CBR_LIMIT_ACTIVE_3 = 50.0;      // Oltre il 60% il canale si sta occupando
+    const double CBR_LIMIT_RESTRICTIVE = 65.0; // Oltre il 65% siamo in forte congestione
     TxPowerManager powerManager;
     cbr_reader.setupCBRReader(false, interface_);
     rate_manager.setup_rate_manager(interface_radiotap_); // <-- Usa l'interfaccia radiotap per il RateManager
@@ -70,31 +73,49 @@ void DccManager::dcc_worker_loop() {
             int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
 
             // Determina solo il nuovo stato
-            if (cbr_percent < CBR_LIMIT_ACTIVE) {
+            // Logica di transizione di stato ETSI DCC
+            if (cbr_percent < CBR_LIMIT_ACTIVE_1) {
                 new_state = DccState::RELAXED;
+            } else if (cbr_percent < CBR_LIMIT_ACTIVE_2) {
+                new_state = DccState::ACTIVE_1;
+            } else if (cbr_percent < CBR_LIMIT_ACTIVE_3) {
+                new_state = DccState::ACTIVE_2;
             } else if (cbr_percent < CBR_LIMIT_RESTRICTIVE) {
-                new_state = DccState::ACTIVE;
+                new_state = DccState::ACTIVE_3;
             } else {
                 new_state = DccState::RESTRICTIVE;
             }
 
             // Adesso al primo ciclo 'old_state' è UNKNOWN e 'new_state' sarà (es.) RELAXED. 
             // Essendo diversi, entrerà nell'if e configurerà i parametri di rete istantaneamente.
+
+            // Profilo ETSI TDC (Transmit Datarate Control Attivo)
+            // L'MCS in questo caso può essere cambiato simulando il comando sudo iw dev wlan1 set bitrates legacy-5 
+            // Viene usato per cambiare il rate su wlan1, interfaccia utiulizzata per l'invio dei cam.
+            // NON PUO' essere cambiato su wlan0 e usiamo la cosa di fixed_data_rate ma su wlan1 non funziona.
             if (old_state != new_state) {
                 current_dcc_state_.store(new_state, std::memory_order_relaxed);
                 current_interval_ms_.store(new_interval, std::memory_order_relaxed);
 
                 switch (new_state) {
                     case DccState::RELAXED:
-                        powerManager.set_tx_power(interface_, 33);
-                        rate_manager.set_fixed_rate(6);
-                        break;
-                    case DccState::ACTIVE:
-                        powerManager.set_tx_power(interface_, 15);
+                        powerManager.set_tx_power(interface_, 23); // Massima potenza
                         rate_manager.set_fixed_rate(12);
                         break;
+                    case DccState::ACTIVE_1:
+                        powerManager.set_tx_power(interface_, 19);
+                        rate_manager.set_fixed_rate(12);
+                        break;
+                    case DccState::ACTIVE_2:
+                        powerManager.set_tx_power(interface_, 16);
+                        rate_manager.set_fixed_rate(18);
+                        break;
+                    case DccState::ACTIVE_3:
+                        powerManager.set_tx_power(interface_, 13);
+                        rate_manager.set_fixed_rate(24);
+                        break;
                     case DccState::RESTRICTIVE:
-                        powerManager.set_tx_power(interface_, 1);
+                        powerManager.set_tx_power(interface_, 10);
                         rate_manager.set_fixed_rate(24);
                         break;
                     case DccState::UNKNOWN:

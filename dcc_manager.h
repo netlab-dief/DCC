@@ -20,7 +20,9 @@
 enum class DccState {
     UNKNOWN,
     RELAXED,
-    ACTIVE,
+    ACTIVE_1,
+    ACTIVE_2,
+    ACTIVE_3,
     RESTRICTIVE
 };
 

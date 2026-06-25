@@ -8,7 +8,7 @@ NL_LIBS   := $(shell pkg-config --libs libnl-3.0 libnl-genl-3.0 2>/dev/null || e
 
 # -Idcc permette di trovare tutti gli header nella cartella dcc
 CFLAGS = -c -Wall -IUtilsEncode
-CXXFLAGS = -c -Wall -IUtilsEncode -Idcc $(NL_CFLAGS) -std=c++17
+CXXFLAGS = -c -Wall -IUtilsEncode $(NL_CFLAGS) -std=c++17
 LDFLAGS = -lpthread -lssl -lcrypto -lm $(NL_LIBS)
 
 # Directories

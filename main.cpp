@@ -22,7 +22,9 @@ void signal_handler(int signal_num) {
 std::string to_string(DccState state) {
     switch (state) {
         case DccState::RELAXED:     return "RELAXED";
-        case DccState::ACTIVE:      return "ACTIVE";
+        case DccState::ACTIVE_1:    return "ACTIVE_1";
+        case DccState::ACTIVE_2:    return "ACTIVE_2";
+        case DccState::ACTIVE_3:    return "ACTIVE_3";
         case DccState::RESTRICTIVE: return "RESTRICTIVE";
         default:                    return "UNKNOWN";
     }
