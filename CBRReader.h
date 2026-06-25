@@ -1,5 +1,5 @@
-#ifndef OSCAR_CBRREADER_H
-#define OSCAR_CBRREADER_H
+#ifndef CBRREADER_H
+#define CBRREADER_H
 
 #include <string>
 #include <netlink/netlink.h>
@@ -13,8 +13,11 @@
 #include <netlink/msg.h>
 #include <netlink/attr.h>
 #include <thread>
+#include <mutex> // Incluso per std::mutex
 #include "utils.h"
 
+// Forward declaration della classe per il cbr_handler (se necessario)
+class CBRReader;
 int cbr_handler(struct nl_msg *msg, void *arg);
 
 class CBRReader {
@@ -38,6 +41,12 @@ class CBRReader {
         std::string m_dissemination_interface;
         std::thread m_cbr_thread;
 
+        // Spostata in private per impedire accessi diretti non sincronizzati dall'esterno
+        CBRData m_cbr_data;
+
+        // Permette alla funzione callback globale di accedere al mutex e ai dati privati
+        friend int cbr_handler(struct nl_msg *msg, void *arg);
+
     public:
         CBRReader();
         ~CBRReader();
@@ -49,7 +58,8 @@ class CBRReader {
         float get_current_rx_time();
         void wrapper_start_reading_cbr();
 
-        CBRData m_cbr_data;
+        // mutable permette il lock_guard anche all'interno di eventuali metodi const (es. i getter)
+        mutable std::mutex m_mutex; 
 };
 
-#endif // OSCAR_CBRREADER_H
+#endif // CBRREADER_H

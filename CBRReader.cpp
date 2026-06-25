@@ -1,6 +1,6 @@
 #include "CBRReader.h"
 #include <stdexcept>
-
+#include <mutex> // Incluso per std::mutex e std::lock_guard
 
 CBRReader::CBRReader () = default;
 
@@ -8,27 +8,32 @@ CBRReader::~CBRReader () = default;
 
 void CBRReader::setupCBRReader(bool verbose, std::string dissemination_interface)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_cbr_data.verbose = verbose;
     m_dissemination_interface = dissemination_interface;
 }
 
 float CBRReader::get_current_cbr()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_cbr_data.currentCBR;
 }
 
 float CBRReader::get_current_busy_time()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_cbr_data.currentBusyTime;
 }
 
 float CBRReader::get_current_tx_time()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_cbr_data.currentTxTime;
 }
 
 float CBRReader::get_current_rx_time()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_cbr_data.currentRxTime;
 }
 
@@ -50,10 +55,10 @@ void CBRReader::read_cbr_from_netlink(nl_sock_info_t nl_sock_info)
 {
     struct nl_msg *nl_msg = nlmsg_alloc();
 
-	genlmsg_put(nl_msg,NL_AUTO_PORT,NL_AUTO_SEQ,nl_sock_info.nl80211_id,0,NLM_F_DUMP | NLM_F_REQUEST,NL80211_CMD_GET_SURVEY,0);
-	nla_put_u32(nl_msg,NL80211_ATTR_IFINDEX,nl_sock_info.ifindex);
+    genlmsg_put(nl_msg,NL_AUTO_PORT,NL_AUTO_SEQ,nl_sock_info.nl80211_id,0,NLM_F_DUMP | NLM_F_REQUEST,NL80211_CMD_GET_SURVEY,0);
+    nla_put_u32(nl_msg,NL80211_ATTR_IFINDEX,nl_sock_info.ifindex);
 
-	nl_socket_modify_cb(nl_sock_info.nl_sock,NL_CB_VALID,NL_CB_CUSTOM,cbr_handler,this);
+    nl_socket_modify_cb(nl_sock_info.nl_sock,NL_CB_VALID,NL_CB_CUSTOM,cbr_handler,this);
 
     nl_send_auto_complete(nl_sock_info.nl_sock,nl_msg);
 
@@ -77,6 +82,11 @@ void CBRReader::wrapper_start_reading_cbr()
 int cbr_handler(struct nl_msg *msg, void *arg)
 {
     auto* reader = reinterpret_cast<CBRReader*>(arg);
+    
+    // Acquisiamo il lock sull'istanza di CBRReader poiché modificheremo/leggeremo m_cbr_data
+    // Il lock verrà rilasciato automaticamente a fine funzione (RAII)
+    std::lock_guard<std::mutex> lock(reader->m_mutex);
+
     struct nlattr *tb[NL80211_ATTR_MAX + 1];
     struct genlmsghdr *gnlh = (struct genlmsghdr *) nlmsg_data(nlmsg_hdr(msg));
     struct nlattr *sinfo[NL80211_SURVEY_INFO_MAX + 1];
