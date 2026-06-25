@@ -59,7 +59,7 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
 
     int bitrate_num = map_rate_index(rate_idx);
 
-    // 1. Risoluzione dell'indice dell'interfaccia di rete
+    // 1. Risoluzione dell'indice dell'interfaccia di rete (es. "wlan1" -> 3)
     unsigned int if_index = if_nametoindex(interface_.c_str());
     if (if_index == 0) {
         std::cerr << "\033[1;31m[RateManager][Netlink] Interfaccia non trovata: " << interface_ << "\033[0m" << std::endl;
@@ -94,7 +94,7 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
         return;
     }
 
-    // 5. Configurazione dell'intestazione del messaggio
+    // 5. Configurazione dell'intestazione del messaggio (NL80211_CMD_SET_TX_BITRATE_MASK)
     genlmsg_put(msg, 
                 NL_AUTO_PORT, 
                 NL_AUTO_SEQ, 
@@ -104,20 +104,26 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
                 NL80211_CMD_SET_TX_BITRATE_MASK, 
                 0);
 
-    // Impostiamo l'interfaccia
+    // Aggiunta dell'indice dell'interfaccia target
     nla_put_u32(msg, NL80211_ATTR_IFINDEX, if_index);
 
-    // 6. Costruzione della struttura nidificata dei bitrate tramite nest pointers
+    // 6. Costruzione della struttura nidificata presa dall'esempio di 'iw'
     bool serialization_success = false;
-    struct nlattr* tx_rates_nest = nla_nest_start(msg, NL80211_ATTR_TX_RATES);
     
-    if (tx_rates_nest) {
-        struct nlattr* band_nest = nla_nest_start(msg, NL80211_BAND_5GHZ);
-        if (band_nest) {
-            uint8_t rate_value = static_cast<uint8_t>(bitrate_num * 10);
-            if (nla_put(msg, NL80211_TXRATE_LEGACY, sizeof(rate_value), &rate_value) >= 0) {
-                nla_nest_end(msg, band_nest);
-                nla_nest_end(msg, tx_rates_nest);
+    // nl_rates = nla_nest_start(msg, NL80211_ATTR_TX_RATES);
+    struct nlattr* nl_rates = nla_nest_start(msg, NL80211_ATTR_TX_RATES);
+    if (nl_rates) {
+        // nl_band = nla_nest_start(msg, NL80211_BAND_5GHZ);
+        struct nlattr* nl_band = nla_nest_start(msg, NL80211_BAND_5GHZ);
+        if (nl_band) {
+            // Calcolo del valore secondo i sorgenti di iw: Mbps * 2 (es. 24 Mbps * 2 = 48)
+            uint8_t legacy_5 = static_cast<uint8_t>(bitrate_num * 2);
+            
+            // nla_put(msg, NL80211_TXRATE_LEGACY, n_legacy_5, legacy_5);
+            // Passiamo la dimensione dell'array (1 byte nel nostro caso singolo) e il puntatore al dato
+            if (nla_put(msg, NL80211_TXRATE_LEGACY, sizeof(legacy_5), &legacy_5) >= 0) {
+                nla_nest_end(msg, nl_band);
+                nla_nest_end(msg, nl_rates);
                 serialization_success = true;
             }
         }
@@ -133,10 +139,10 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
     // 7. Invio sincrono al kernel e attesa dell'ACK di successo
     int ret = nl_send_sync(socket, msg);
 
-    // Pulizia del socket principale (nl_send_sync si occupa già di liberare il 'msg')
+    // Pulizia del socket principale
     nl_socket_free(socket);
 
-    // 8. Gestione del risultato
+    // 8. Gestione del risultato ritornato dal kernel
     if (ret != 0) {
         std::cerr << "\033[1;31m[RateManager][Netlink] Errore nell'impostare il bitrate: " 
                   << nl_geterror(ret) << "\033[0m" << std::endl;

@@ -100,28 +100,28 @@ void DccManager::dcc_worker_loop() {
                 switch (new_state) {
                     case DccState::RELAXED:
                         powerManager.set_tx_power(interface_, 23); // Massima potenza
-                        rate_manager.set_fixed_rate(12);
-                        //rate_manager.set_fixed_rate_netlink(12); // Imposta il bitrate a 12 Mbps tramite Netlink
+                        //rate_manager.set_fixed_rate(12);
+                        rate_manager.set_fixed_rate_netlink(12); // Imposta il bitrate a 12 Mbps tramite Netlink
                         break;
                     case DccState::ACTIVE_1:
                         powerManager.set_tx_power(interface_, 19);
-                        rate_manager.set_fixed_rate(12);
-                        //rate_manager.set_fixed_rate_netlink(12); // Imposta il bitrate a 12 Mbps tramite Netlink
+                        //rate_manager.set_fixed_rate(12);
+                        rate_manager.set_fixed_rate_netlink(12); // Imposta il bitrate a 12 Mbps tramite Netlink
                         break;
                     case DccState::ACTIVE_2:
                         powerManager.set_tx_power(interface_, 16);
-                        rate_manager.set_fixed_rate(18);
-                        //rate_manager.set_fixed_rate_netlink(18); // Imposta il bitrate a 18 Mbps tramite Netlink
+                        //rate_manager.set_fixed_rate(18);
+                        rate_manager.set_fixed_rate_netlink(18); // Imposta il bitrate a 18 Mbps tramite Netlink
                         break;
                     case DccState::ACTIVE_3:
                         powerManager.set_tx_power(interface_, 13);
-                        rate_manager.set_fixed_rate(24);
-                        //rate_manager.set_fixed_rate_netlink(24); // Imposta il bitrate a 24 Mbps tramite Netlink
+                        //rate_manager.set_fixed_rate(24);
+                        rate_manager.set_fixed_rate_netlink(24); // Imposta il bitrate a 24 Mbps tramite Netlink
                         break;
                     case DccState::RESTRICTIVE:
                         powerManager.set_tx_power(interface_, 10);
-                        rate_manager.set_fixed_rate(24);
-                        //rate_manager.set_fixed_rate_netlink(24); // Imposta il bitrate a 24 Mbps tramite Netlink
+                        //rate_manager.set_fixed_rate(24);
+                        rate_manager.set_fixed_rate_netlink(24); // Imposta il bitrate a 24 Mbps tramite Netlink
                         break;
                     case DccState::UNKNOWN:
                         break;
