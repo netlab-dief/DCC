@@ -209,9 +209,34 @@ void DccManager::limeric_worker_loop() {
     cbr_reader.setupCBRReader(false, interface_);
     rate_manager.setup_rate_manager(interface_radiotap_); 
 
-    // NOTA STANDARD ETSI: Per LIMERIC, l'intervallo di polling dell'algoritmo
-    // deve essere tassativamente di 200 ms per garantire la stabilità matematica del ciclo.
-    const int LIMERIC_POLLING_MS = 200; 
+    // =========================================================================
+    // PARAMETRI STANDARD LIMERIC & ETSI DCC
+    // =========================================================================
+    const int LIMERIC_POLLING_MS = 200; // Intervallo di controllo fisso (200ms)
+    
+    // Parametri dell'algoritmo di controllo lineare
+    const float CBR_TARGET = 60.0f;     // Target CBR (es. 60%)
+    const float ALPHA = 0.1f;          // Coefficiente di sbiadimento/oblio (0 < alpha < 1)
+    const float BETA = 1.0f / 150.0f;  // Guadagno lineare dell'errore
+
+    // Limiti di saturazione per il delta_offset (Guadagno massimo/minimo per iterazione)
+    const float G_MAX = 0.005f;
+    const float G_MIN = -0.005f;
+
+    // Limiti fisici e standard di occupazione del canale (Delta)
+    const float DELTA_MIN = 0.0025f;   // Equivalente a ~1 Hz per pacchetti standard
+    const float DELTA_MAX = 0.03f;     // Equivalente a ~40 Hz per pacchetti standard
+
+    // Durata della trasmissione del pacchetto (T_on) in millisecondi.
+    // Supponendo una dimensione media del pacchetto CAM di 300 byte a 6 Mbps:
+    // 300 byte * 8 = 2400 bit. 2400 bit / 6,000,000 bps = 400 µs. Aggiungendo il preambolo: ~0.5 ms.
+    const float T_ON_MS = 0.5f; 
+
+    // Stato locale dell'algoritmo
+    float current_delta = DELTA_MIN;   // Inizializzazione al minimo
+    float cbr_its = 0.0f;              // CBR filtrato (Moving Average)
+    bool is_first_iteration = true;
+    // =========================================================================
 
     std::cout << "[DCC INIT] Loop LIMERIC Adattativo avviato." << std::endl;
 
@@ -223,41 +248,73 @@ void DccManager::limeric_worker_loop() {
             float cbr_percent = raw_cbr * 100.0f;
             last_known_cbr_.store(cbr_percent, std::memory_order_relaxed);
 
-            // 1. Calcola il nuovo intervallo temporale (T_off) tramite LIMERIC
-            int new_interval = calculate_limeric_interval(cbr_percent);
+            // STEP 1: Filtro a media mobile esponenziale sul CBR per stabilizzare l'input
+            if (is_first_iteration) {
+                cbr_its = cbr_percent;
+                is_first_iteration = false;
+            } else {
+                cbr_its = 0.5f * cbr_its + 0.5f * cbr_percent;
+            }
+
+            // STEP 2: Calcolo del guadagno d'errore proporzionale (delta_offset)
+            float error = CBR_TARGET - cbr_its;
+            float delta_offset = BETA * error;
+
+            // Applicazione dei limiti di saturazione (clipping) sull'offset per passo di tempo
+            if (error > 0) {
+                if (delta_offset > G_MAX) delta_offset = G_MAX;
+            } else {
+                if (delta_offset < G_MIN) delta_offset = G_MIN;
+            }
+
+            // STEP 3: Equazione di controllo lineare LIMERIC
+            float new_delta = (1.0f - ALPHA) * current_delta + delta_offset;
+
+            // STEP 4: Clipping del Delta finale entro i limiti fisici consentiti
+            if (new_delta > DELTA_MAX) new_delta = DELTA_MAX;
+            if (new_delta < DELTA_MIN) new_delta = DELTA_MIN;
+            current_delta = new_delta;
+
+            // STEP 5: Traduzione del Delta in Intervallo di spegnimento (T_off) in millisecondi
+            // Formula: T_off = T_on / Delta
+            int new_interval = static_cast<int>(T_ON_MS / current_delta);
+
+            // Vincolo di sicurezza ETSI DCC (T_off ammesso tra 25 ms e 1000 ms)
+            if (new_interval < 25) new_interval = 25;
+            if (new_interval > 1000) new_interval = 1000;
+
+            // Calcolo del tasso di trasmissione teorico (Hz) per i passaggi successivi
+            current_tx_rate_ = 1000.0f / static_cast<float>(new_interval);
+
+            // Aggiorna l'intervallo atomico e recupera il vecchio valore
             int old_interval = current_interval_ms_.exchange(new_interval, std::memory_order_relaxed);
 
             // 2. Controllo dinamico e fluido della Potenza (TPC) in base al Rate corrente
-            // Se trasmettiamo al massimo (40Hz) usiamo 23dBm, se siamo strozzati a 1Hz scendiamo a 10dBm
             double target_power = map_linear(current_tx_rate_, 1.0, 40.0, 10.0, 23.0);
             powerManager.set_tx_power(interface_, static_cast<int>(target_power));
 
             // 3. Controllo dinamico dell'MCS (TDC) in base al carico del canale (CBR)
-            // Sotto il 30% forziamo MCS 3 (6Mbps, netlink valore 12). Sopra il 65% forziamo MCS 6 (12Mbps, netlink valore 24)
             int target_mcs_netlink = 12; // Default 6 Mbps
             if (cbr_percent > 30.0f) {
                 target_mcs_netlink = static_cast<int>(map_linear(cbr_percent, 30.0, 65.0, 12.0, 24.0));
-                // Arrotonda ai valori netlink validi dei passi MCS (12=6Mbps, 18=9Mbps, 24=12Mbps)
                 if (target_mcs_netlink > 12 && target_mcs_netlink < 18) target_mcs_netlink = 12;
                 else if (target_mcs_netlink >= 18 && target_mcs_netlink < 24) target_mcs_netlink = 18;
                 else if (target_mcs_netlink >= 24) target_mcs_netlink = 24;
             }
             rate_manager.set_fixed_rate_netlink(target_mcs_netlink);
 
-            // 4. Se l'intervallo è variato in modo significativo, notifica il livello applicativo (CAM)
-            // Per evitare di intasare il socket UDP a ogni millesimo di variazione, notifichiamo solo se 
-            // lo scostamento è apprezzabile (es. > 5ms) o se è passato del tempo.
+            // 4. Notifica il livello applicativo se lo scostamento è apprezzabile
             if (std::abs(new_interval - old_interval) >= 5) {
                 if (sockfd_ >= 0) {
-                    // Inviamo direttamente il valore del T_off calcolato in millisecondi
                     int32_t interval_to_send = static_cast<int32_t>(new_interval);
                     sendto(sockfd_, &interval_to_send, sizeof(interval_to_send), 0,
                            (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
                 }
 
-                // Debug log con output del comportamento continuo
-                std::cout << "[DCC LIMERIC] CBR: " << std::fixed << std::setprecision(1) << cbr_percent 
-                          << "% | Tx Rate: " << std::setprecision(2) << current_tx_rate_ << " Hz"
+                std::cout << "[DCC LIMERIC] CBR Sensed: " << std::fixed << std::setprecision(1) << cbr_percent 
+                          << "% | CBR Filtered: " << cbr_its << "%"
+                          << " | Delta: " << std::setprecision(5) << current_delta
+                          << " | Tx Rate: " << std::setprecision(2) << current_tx_rate_ << " Hz"
                           << " | T_off Target: " << new_interval << " ms"
                           << " | Power: " << static_cast<int>(target_power) << " dBm"
                           << " | MCS Netlink: " << target_mcs_netlink << std::endl;
