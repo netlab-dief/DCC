@@ -8,11 +8,15 @@ DCC is a congestion management system that monitors the channel busy ratio (CBR)
 
 ## Features
 
-- **Real-time Channel Monitoring**: Continuously monitors Channel Busy Ratio (CBR) using Radiotap interfaces
-- **Dynamic State Management**: Transitions between different congestion states (RELAXED, ACTIVE_1, ACTIVE_2, ACTIVE_3, RESTRICTIVE)
-- **Transmission Power Control**: Adaptively adjusts transmission power based on network conditions
-- **Rate Adaptation**: Manages transmission rates according to current congestion state
-- **Thread-safe Operations**: Employs atomic operations and thread synchronization for safe concurrent access
+- **Real-time Channel Monitoring**: Continuously monitors Channel Busy Ratio (CBR) using Netlink-based Radiotap interfaces
+- **5-State Congestion Machine**: Dynamic transitions between RELAXED, ACTIVE_1, ACTIVE_2, ACTIVE_3, and RESTRICTIVE states based on CBR thresholds
+- **Adaptive Transmission Power Control**: Scales TX power from 23 dBm (relaxed) to 10 dBm (restrictive) for optimal channel efficiency
+- **Intelligent Rate Adaptation**: Adjusts data rates (6-24 Mbps) and transmission intervals (50ms-1s) based on network congestion
+- **Real-time Scheduling**: Operates with SCHED_FIFO priority 70 for deterministic, low-latency congestion control
+- **Cross-Layer IPC**: Sends UDP notifications to CAM process (127.0.0.1:5555) for inter-process communication
+- **Thread-safe Operations**: Employs atomic operations, mutex protection, and POSIX synchronization primitives
+- **Graceful Shutdown**: Clean SIGINT handler with proper resource cleanup
+- **Comprehensive Logging**: Detailed state transitions, CBR readings, and adjustment notifications
 
 ## Project Structure
 
@@ -98,44 +102,58 @@ Press **Ctrl+C** to gracefully shut down the system:
 
 The system operates in five different states based on channel congestion:
 
-| State | Description | Typical CBR Range |
-|-------|-------------|-------------------|
-| **RELAXED** | Low congestion, normal operation | CBR < 30% |
-| **ACTIVE_1** | Mild congestion detected | 30% ≤ CBR < 40% |
-| **ACTIVE_2** | Moderate congestion | 40% ≤ CBR < 50% |
-| **ACTIVE_3** | High congestion | 50% ≤ CBR < 60% |
-| **RESTRICTIVE** | Severe congestion | CBR ≥ 60% |
+| State | CBR Range | TX Power | TX Rate | TX Interval | Max Frequency |
+|-------|-----------|----------|---------|-------------|---------------|
+| **RELAXED** | < 30% | 23 dBm | 12 Mbps | 50 ms | 20 Hz |
+| **ACTIVE_1** | 30-40% | 19 dBm | 12 Mbps | 100 ms | 10 Hz |
+| **ACTIVE_2** | 40-50% | 16 dBm | 18 Mbps | 200 ms | 5 Hz |
+| **ACTIVE_3** | 50-65% | 13 dBm | 24 Mbps | 400 ms | 2.5 Hz |
+| **RESTRICTIVE** | ≥ 65% | 10 dBm | 24 Mbps | 1000 ms | 1 Hz |
 
 ## Module Descriptions
 
 ### DCC Manager (`dcc_manager.h/cpp`)
-Coordinates the overall congestion control logic:
-- Monitors CBR from the radio interface
-- Transitions between states based on congestion thresholds
-- Triggers power and rate adjustments
-- Manages monitoring thread lifecycle
-
-### CBR Reader (`CBRReader.h/cpp`)
-Captures and analyzes radio channel activity:
-- Uses Netlink sockets for kernel communication
+Core congestion control engine running as a real-time thread:
+- Runs with SCHED_FIFO scheduling at priority 70 for deterministic behavior
+- Polls every 1000ms for CBR updates from the kernel
+- Implements 5-state machine with automatic state transitions
+- Triggers synchronized power and rate adjustments
+- Sends UDP notifications (127.0.0.1:5555) for inter-process communication
+- Manages monitoring thread lifecycle and graceful shutdown
+Netlink-based channel monitoring system:
+- Queries kernel via `NL80211_CMD_GET_SURVEY` command
+- Calculates Channel Busy Ratio = (busy_time / total_time) from wireless survey data
+- Integrates directly with Linux wireless extensions (nl80211)
+- Thread-safe with mutex protection for concurrent access
+- Provides real-time channel state information to the DCC managertion
 - Reads packet metadata from Radiotap interface
-- Calculates Channel Busy Ratio
-- Thread-safe querying of current CBR value
-
-### Transmission Power Manager (`TxPowerManager.h/cpp`)
+Direct hardware transmission power control:
+- Sets TX power levels from 10-23 dBm via Netlink nl80211
+- Uses `NL80211_CMD_SET_TX_POWER` for direct kernel control (no system calls)
+- Dynamically scales power based on DCC congestion state
+- Optimizes transmit efficiency while managing channel utilizationPowerManager.h/cpp`)
 Manages transmit power adjustments:
-- Scales transmission power based on congestion state
-- Communicates with wireless driver via netlink
-- Maintains power level constraints
-
+Modulation and Coding Scheme (MCS) adaptation:
+- Sets fixed transmission rates: 6, 12, 18, 24 Mbps
+- Uses Netlink nl80211 `NL80211_CMD_SET_TX_BITRATE_MASK` for rate control
+- Higher rates (24 Mbps) applied in more restrictive states for robustness
+- Adapts rates based on real-time channel congestion assessment
 ### Rate Manager (`rate_manager.h/cpp`)
 Adapts transmission rate:
 - Adjusts data rate based on network conditions
 - Implements rate selection strategy
-- Maintains minimum QoS requirements
+- Mprehensive utility library providing:
+- Timestamp functions (monotonic, realtime, GN, CAM, CPM epochs)
+- Netlink socket creation and management
+- RSSI (signal strength) queries and monitoring
+- Logging and formatted output utilities
+- Timer file descriptor creation for scheduling
 
-### Utilities (`utils.h/cpp`)
-Common helper functions for:
+### Vehicle Data Definitions (`vehicleDataDef.h`)
+Data structures for vehicular network communication:
+- `OptionalDataItem<T>`: Template for nullable/optional data fields
+- `vehicleData`: Complete vehicle record with position, speed, RSSI, and timestamps
+- `StationTypeLDM`: Vehicle classification enumeration (pedestrian, cyclist, car, truck, RSU, etc.)ions for:
 - Data conversion and encoding
 - Logging and debugging
 - Network utilities
@@ -146,26 +164,33 @@ Common helper functions for:
 
 #### Constructor
 ```cpp
-DccManager(std::string interface, std::string interface_radiotap, 
-           int initial_interval_ms = 100);
+DccManager(std:: & Real-time Characteristics
+
+The implementation employs multiple synchronization mechanisms:
+- **Atomic Operations**: `std::atomic<bool>` for lock-free flag operations
+- **Mutex Protection**: Synchronized access to shared data structures
+- **POSIX Primitives**: Thread synchronization and condition variables
+- **Signal Handlers**: SIGINT handler for graceful shutdown with cleanup
+- **Real-time Scheduling**: SCHED_FIFO priority 70 for deterministic latency
+- **Non-bl & Monitoring
+
+Real-time system monitoring and diagnostics:
+- State transitions logged with CBR values and thresholds
+- Periodic CBR readings displayed (every monitoring cycle)
+- Power and rate adjustments reported with dBm and Mbps values
+- Error conditions clearly marked with context
+- 1-second monitoring output for visibility into system behavior
+
+Example output:
 ```
-
-#### Methods
-- `void start()` - Start the monitoring thread
-- `void stop()` - Stop the monitoring thread and cleanup
-- `float get_current_cbr() const` - Get current Channel Busy Ratio
-- `DccState get_current_state() const` - Get current DCC state
-
-## Thread Safety
-
-The implementation uses:
-- `std::atomic<bool>` for atomic flag operations
-- Mutex protection for shared data structures
-- POSIX thread synchronization primitives
-- Signal handlers for graceful shutdown
-
-## Logging
-
+[MAIN] Avvio del sistema di controllo DCC...
+[DCC] Current state: ACTIVE_1, CBR: 35.2%
+[POWER] Adjusting Tx power to 19 dBm
+[RATE] Rate adjusted to 12 Mbps
+[DCC] Notification sent to CAM process
+^C
+[MAIN] Ricevuto Ctrl+C (SIGINT). Avvio chiusura pulita...
+[DCC] Cleanup completed
 The system provides console output for monitoring:
 - State transitions are logged
 - CBR readings are displayed periodically
