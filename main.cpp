@@ -3,9 +3,8 @@
 #include <thread>
 #include <csignal> // Necessario per std::signal e SIGINT
 #include <atomic>
+#include <string>
 #include "dcc_manager.h"
-
-// Rimosse le macro HARDCODED per le interfacce
 
 // Variabile atomica globale per controllare il ciclo del main
 std::atomic<bool> keep_running{true};
@@ -19,7 +18,10 @@ void signal_handler(int signal_num) {
 }
 
 // Funzione helper per stampare lo stato in formato testo
-std::string to_string(DccState state) {
+std::string to_string(DccState state, bool limeric_enabled) {
+    if (limeric_enabled) {
+        return "DYNAMIC (LIMERIC)";
+    }
     switch (state) {
         case DccState::RELAXED:     return "RELAXED";
         case DccState::ACTIVE_1:    return "ACTIVE_1";
@@ -31,12 +33,12 @@ std::string to_string(DccState state) {
 }
 
 int main(int argc, char* argv[]) {
-    // Controllo che siano stati passati i parametri corretti
-    // argc deve essere 3 (nome_programma + interfaccia_standard + interfaccia_radiotap)
+    // Controllo parametri minimi obbligatori (nome_programma + interfaccia_standard + interfaccia_radiotap)
     if (argc < 3) {
         std::cerr << "Errore: Parametri mancanti!" << std::endl;
-        std::cerr << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap>" << std::endl;
-        std::cerr << "Esempio: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
+        std::cerr << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric]" << std::endl;
+        std::cerr << "Esempio Reattivo: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
+        std::cerr << "Esempio LIMERIC:  sudo " << argv[0] << " wlan0 wlan1 --limeric" << std::endl;
         return 1;
     }
 
@@ -49,16 +51,27 @@ int main(int argc, char* argv[]) {
     std::string interface_name = argv[1]; 
     std::string interface_radiotap = argv[2]; 
     int initial_interval_ms = 100;
+    
+    // Controllo del parametro opzionale LIMERIC
+    bool use_limeric = false;
+    if (argc >= 4 && std::string(argv[3]) == "--limeric") {
+        use_limeric = true;
+    }
 
     std::cout << "[MAIN] Interfaccia Rete: " << interface_name << std::endl;
     std::cout << "[MAIN] Interfaccia Radiotap: " << interface_radiotap << std::endl;
+    std::cout << "[MAIN] Modalità Algoritmo: " << (use_limeric ? "LIMERIC (Adattativo)" : "Stati ETSI (Reattivo)") << std::endl;
 
     // Istanziamo il manager
     DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms);
 
-    // Avviamo il thread (ricorda di eseguire con sudo per la priorità RT)
-    std::cout << "[MAIN] Avvio del thread DCC..." << std::endl;
-    dcc_manager.start();
+    // Avviamo il thread corretto in base alla scelta dell'utente
+    std::cout << "[MAIN] Avvio del thread DCC Worker..." << std::endl;
+    if (use_limeric) {
+        dcc_manager.start_limeric();
+    } else {
+        dcc_manager.start();
+    }
 
     std::cout << "[MAIN] Sistema in esecuzione. Premi Ctrl+C per terminare." << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
@@ -68,10 +81,11 @@ int main(int argc, char* argv[]) {
         // Legge i dati dal thread DCC ogni secondo
         float current_cbr = dcc_manager.get_current_cbr();
         DccState current_state = dcc_manager.get_current_state();
-        //int current_interval = dcc_manager.get_current_interval_ms();
+        int current_interval = dcc_manager.get_current_interval_ms();
 
         std::cout << "[MAIN MONITOR] CBR: " << current_cbr 
-                  << "% | Stato: " << to_string(current_state) 
+                  << "% | Stato: " << to_string(current_state, use_limeric) 
+                  << " | T_off corrente: " << current_interval << " ms"
                   << std::endl;
 
         // Aspetta 1 secondo prima del prossimo log, ma si sveglia se interrompiamo
@@ -79,7 +93,6 @@ int main(int argc, char* argv[]) {
     }
 
     // --- FASE DI USCITA PULITA ---
-    // Quando premi Ctrl+C, esce dal while ed esegue questo codice:
     std::cout << "[MAIN] Arresto del thread worker DCC..." << std::endl;
     dcc_manager.stop(); 
 

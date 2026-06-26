@@ -20,6 +20,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+#include <algorithm> // Per std::clamp
+
 enum class DccState {
     UNKNOWN,
     RELAXED,
@@ -36,6 +38,8 @@ public:
 
     void start();
     void stop();
+
+    void start_limeric();
 
     float get_current_cbr() const;
     DccState get_current_state() const;
@@ -61,4 +65,9 @@ private:
     // Membri per la comunicazione Cross-Layer verso il processo CAM
     int sockfd_{-1};
     sockaddr_in cam_program_addr_{};
+
+    // Membri per l'algoritmo LIMERIC
+    int calculate_limeric_interval(float cbr_percent);
+    void limeric_worker_loop();
+    double current_tx_rate_{20.0}; // Frequenza di trasmissione corrente (Hz)
 };
