@@ -22,6 +22,8 @@
 
 #include <algorithm> // Per std::clamp
 
+#include <fstream>
+
 enum class DccState {
     UNKNOWN,
     RELAXED,

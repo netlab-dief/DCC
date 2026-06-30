@@ -75,6 +75,20 @@ void DccManager::dcc_worker_loop() {
         cbr_reader.wrapper_start_reading_cbr();
         float raw_cbr = cbr_reader.get_current_cbr();
 
+        //float raw_cbr = -1.0f;
+        //bool read_from_file_success = false;
+        //std::ifstream file("fake_cbr_value"); // Inserisci qui il percorso //corretto del file
+        //if (file.is_open()) {
+        //    if (file >> raw_cbr) {
+        //        read_from_file_success = true;
+        //    }
+        //}
+//
+        //// Se il file non esiste o la lettura è fallita, usa il metodo normale
+        //if (!read_from_file_success) {
+        //    raw_cbr = cbr_reader.get_current_cbr();
+        //}
+
         if (raw_cbr >= 0.0f) {
             float cbr_percent = raw_cbr * 100.0f;
             last_known_cbr_.store(cbr_percent, std::memory_order_relaxed);
@@ -104,7 +118,7 @@ void DccManager::dcc_worker_loop() {
                     case DccState::RELAXED:
                         new_interval = 50; // Max 20 Hz teorici a livello radio (il CAM si fermerà a 100ms/10Hz)
                         powerManager.set_tx_power(interface_, 23); 
-                        rate_manager.set_fixed_rate_netlink(12); 
+                        rate_manager.set_fixed_rate_netlink(6); 
                         break;
                     case DccState::ACTIVE_1:
                         new_interval = 100; // 10 Hz massimo
@@ -159,6 +173,11 @@ void DccManager::dcc_worker_loop() {
 
 
 // LIMERIC ALGORITHM IMPLEMENTATION
+// CBR Rilevato,Valore Netlink impostato,Bitrate Reale (Modulazione 802.11p / C-V2X),Comportamento logico
+// <30%,12,6 Mbps (QPSK 1/2),Canale libero: si usa la modulazione più robusta per avere massima affidabilità.
+// Tra 30% e 48%,18,9 Mbps (QPSK 3/4),Il canale inizia a caricarsi: si aumenta la velocità per far durare meno il pacchetto in aria.
+// >48% (fino a 65%),24,12 Mbps (16-QAM 1/2),"Canale congestionato: si forza il bitrate alto (12 Mbps) per liberare lo spettro il prima possibile, accettando una leggera perdita di sensibilità."
+
 // Funzione di utilità per mappare linearmente un valore tra due range
 static double map_linear(double x, double in_min, double in_max, double out_min, double out_max) {
     if (in_max == in_min) return out_min;
