@@ -73,8 +73,11 @@ void DccManager::dcc_worker_loop() {
 
     while (!stop_dcc_thread_) {
         cbr_reader.wrapper_start_reading_cbr();
+
+        // Commenta questo blocco se vuoi leggere il CBR da un file esterno invece che dal CBRReader
         float raw_cbr = cbr_reader.get_current_cbr();
 
+        // Se vuoi leggere il CBR da un file esterno, puoi decommentare questo blocco e commentare la riga sopra
         //float raw_cbr = -1.0f;
         //bool read_from_file_success = false;
         //std::ifstream file("fake_cbr_value"); // Inserisci qui il percorso //corretto del file
@@ -83,7 +86,7 @@ void DccManager::dcc_worker_loop() {
         //        read_from_file_success = true;
         //    }
         //}
-//
+
         //// Se il file non esiste o la lettura è fallita, usa il metodo normale
         //if (!read_from_file_success) {
         //    raw_cbr = cbr_reader.get_current_cbr();
