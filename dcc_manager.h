@@ -80,6 +80,15 @@ private:
     std::ofstream csv_log_file_;
 
     const int CBR_POLLING_INTERVAL_MS = 100;
+
+    // --- Isteresi / anti-oscillazione ---
+    std::chrono::steady_clock::time_point last_transition_time_;
+    static constexpr std::chrono::milliseconds MIN_DWELL_TIME{1000}; // 1s minimo per stato
+    float cbr_smoothed_ = -1.0f;   // -1 = non ancora inizializzato
+    static constexpr float EWMA_ALPHA = 0.3f; // reattività filtro (0=lento, 1=nessun filtro)
+
+    // Helper per calcolo stato con isteresi
+    DccState compute_state_with_hysteresis(float cbr_percent, DccState current_state);
 };
 
 #endif // DCC_MANAGER_H

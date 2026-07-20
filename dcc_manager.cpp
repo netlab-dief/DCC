@@ -128,23 +128,19 @@ int DccManager::get_current_interval_ms() const {
 }
 
 void DccManager::dcc_worker_loop() {
-    const double CBR_LIMIT_ACTIVE_1 = 30.0;      
-    const double CBR_LIMIT_ACTIVE_2 = 40.0;      
-    const double CBR_LIMIT_ACTIVE_3 = 50.0;      
-    const double CBR_LIMIT_RESTRICTIVE = 65.0; 
-    
     TxPowerManager powerManager;
     cbr_reader.setupCBRReader(false, interface_);
     rate_manager.setup_rate_manager(interface_radiotap_); 
 
-    // Variabili per il tracking del log e del fallback
     int current_tx_power = 23;
     int current_mcs = 6;
+
+    // Inizializza il timer di dwell alla partenza del thread
+    last_transition_time_ = std::chrono::steady_clock::now();
 
     while (!stop_dcc_thread_) {
         cbr_reader.wrapper_start_reading_cbr();
 
-        // float raw_cbr = cbr_reader.get_current_cbr();
         float raw_cbr = -1.0f;
         bool read_from_file_success = false;
         std::ifstream file("fake_cbr_value"); 
@@ -159,28 +155,35 @@ void DccManager::dcc_worker_loop() {
         }
 
         if (raw_cbr >= 0.0f) {
-            float cbr_percent = raw_cbr * 100.0f;
-            last_known_cbr_.store(cbr_percent, std::memory_order_relaxed);
+            float cbr_percent_raw = raw_cbr * 100.0f;
 
-            DccState old_state = current_dcc_state_.load(std::memory_order_relaxed);
-            DccState new_state = old_state;
-            int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
-
-            if (cbr_percent < CBR_LIMIT_ACTIVE_1) {
-                new_state = DccState::RELAXED;
-            } else if (cbr_percent < CBR_LIMIT_ACTIVE_2) {
-                new_state = DccState::ACTIVE_1;
-            } else if (cbr_percent < CBR_LIMIT_ACTIVE_3) {
-                new_state = DccState::ACTIVE_2;
-            } else if (cbr_percent < CBR_LIMIT_RESTRICTIVE) {
-                new_state = DccState::ACTIVE_3;
+            // --- 1. Smoothing EWMA ---
+            if (cbr_smoothed_ < 0.0f) {
+                cbr_smoothed_ = cbr_percent_raw; // primo campione, nessun filtro
             } else {
-                new_state = DccState::RESTRICTIVE;
+                cbr_smoothed_ = EWMA_ALPHA * cbr_percent_raw + (1.0f - EWMA_ALPHA) * cbr_smoothed_;
             }
 
-            bool state_changed = (old_state != new_state);
+            last_known_cbr_.store(cbr_smoothed_, std::memory_order_relaxed);
 
-            if (state_changed) {
+            DccState old_state = current_dcc_state_.load(std::memory_order_relaxed);
+
+            // --- 2. Stato proposto con isteresi (soglie asimmetriche) ---
+            DccState proposed_state = compute_state_with_hysteresis(cbr_smoothed_, old_state);
+
+            // --- 3. Dwell time: applica il cambio solo se è passato abbastanza tempo ---
+            auto now = std::chrono::steady_clock::now();
+            bool dwell_elapsed = (now - last_transition_time_) >= MIN_DWELL_TIME;
+
+            DccState new_state = old_state;
+            int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
+            bool state_changed = false;
+
+            if (proposed_state != old_state && dwell_elapsed) {
+                new_state = proposed_state;
+                state_changed = true;
+                last_transition_time_ = now;
+
                 switch (new_state) {
                     case DccState::RELAXED:
                         new_interval = 50; 
@@ -219,11 +222,17 @@ void DccManager::dcc_worker_loop() {
                 }
 
                 std::cout << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
-                          << " | CBR: " << std::fixed << std::setprecision(2) << cbr_percent 
+                          << " | CBR raw: " << std::fixed << std::setprecision(2) << cbr_percent_raw
+                          << "% | CBR smoothed: " << cbr_smoothed_
                           << "% | T_off: " << new_interval << "ms\033[0m" << std::endl;
+            } else if (proposed_state != old_state && !dwell_elapsed) {
+                // Debug opzionale: la transizione è "bloccata" dal dwell time
+                std::cout << "\033[2;90m[DCC DWELL] Transizione " << static_cast<int>(old_state)
+                          << " -> " << static_cast<int>(proposed_state)
+                          << " ritardata (dwell time non ancora scaduto)\033[0m" << std::endl;
             }
 
-            log_telemetry(dcc_state_to_string(new_state), cbr_percent, new_interval, 
+            log_telemetry(dcc_state_to_string(new_state), cbr_smoothed_, new_interval, 
                           current_tx_power, current_mcs, state_changed);
         }
 
@@ -358,5 +367,54 @@ void DccManager::limeric_worker_loop() {
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(LIMERIC_POLLING_MS));
+    }
+}
+
+DccState DccManager::compute_state_with_hysteresis(float cbr_percent, DccState current_state) {
+    // Soglie di SALITA (per passare a stato più restrittivo)
+    const double UP_ACTIVE_1     = 30.0;
+    const double UP_ACTIVE_2     = 40.0;
+    const double UP_ACTIVE_3     = 50.0;
+    const double UP_RESTRICTIVE  = 65.0;
+
+    // Soglie di DISCESA (per tornare a stato meno restrittivo) - più basse!
+    // Il gap (es. 5 punti percentuali) è la "banda morta" che evita l'oscillazione
+    const double DOWN_RELAXED    = 25.0; // sotto: torna a RELAXED da ACTIVE_1
+    const double DOWN_ACTIVE_1   = 35.0; // sotto: torna ad ACTIVE_1 da ACTIVE_2
+    const double DOWN_ACTIVE_2   = 45.0; // sotto: torna ad ACTIVE_2 da ACTIVE_3
+    const double DOWN_ACTIVE_3   = 60.0; // sotto: torna ad ACTIVE_3 da RESTRICTIVE
+
+    switch (current_state) {
+        case DccState::RELAXED:
+            if (cbr_percent >= UP_ACTIVE_1) return DccState::ACTIVE_1;
+            return DccState::RELAXED;
+
+        case DccState::ACTIVE_1:
+            if (cbr_percent >= UP_ACTIVE_2) return DccState::ACTIVE_2;
+            if (cbr_percent < DOWN_RELAXED) return DccState::RELAXED;
+            return DccState::ACTIVE_1;
+
+        case DccState::ACTIVE_2:
+            if (cbr_percent >= UP_ACTIVE_3) return DccState::ACTIVE_3;
+            if (cbr_percent < DOWN_ACTIVE_1) return DccState::ACTIVE_1;
+            return DccState::ACTIVE_2;
+
+        case DccState::ACTIVE_3:
+            if (cbr_percent >= UP_RESTRICTIVE) return DccState::RESTRICTIVE;
+            if (cbr_percent < DOWN_ACTIVE_2) return DccState::ACTIVE_2;
+            return DccState::ACTIVE_3;
+
+        case DccState::RESTRICTIVE:
+            if (cbr_percent < DOWN_ACTIVE_3) return DccState::ACTIVE_3;
+            return DccState::RESTRICTIVE;
+
+        case DccState::UNKNOWN:
+        default:
+            // Primo avvio: nessuno stato precedente, usa soglie di salita "pure"
+            if (cbr_percent < UP_ACTIVE_1)      return DccState::RELAXED;
+            if (cbr_percent < UP_ACTIVE_2)      return DccState::ACTIVE_1;
+            if (cbr_percent < UP_ACTIVE_3)      return DccState::ACTIVE_2;
+            if (cbr_percent < UP_RESTRICTIVE)   return DccState::ACTIVE_3;
+            return DccState::RESTRICTIVE;
     }
 }
