@@ -1,2 +1,5 @@
 *.o
 dcc
+*.png
+*.csv
+fake_cbr_value
