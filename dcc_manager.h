@@ -1,47 +1,44 @@
-#pragma once
+#ifndef DCC_MANAGER_H
+#define DCC_MANAGER_H
 
+#include <iostream>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <chrono>
-#include <iostream>
-#include <iomanip>
-#include <fstream>
-
-#include "CBRReader.h"
-#include "TxPowerManager.h"
-#include "rate_manager.h"
-
-#include <pthread.h> 
-#include <cstring>   
-
+#include <cstring>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-
-#include <algorithm> // Per std::clamp
-
 #include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <algorithm>
+#include <cmath>
+
+// Presumendo le tue inclusioni per la gestione radio e CBR
+#include "CBRReader.h"
+#include "TxPowerManager.h"
+#include "rate_manager.h"
 
 enum class DccState {
-    UNKNOWN,
-    RELAXED,
-    ACTIVE_1,
-    ACTIVE_2,
-    ACTIVE_3,
-    RESTRICTIVE
+    UNKNOWN = 0,
+    RELAXED = 1,
+    ACTIVE_1 = 2,
+    ACTIVE_2 = 3,
+    ACTIVE_3 = 4,
+    RESTRICTIVE = 5
 };
 
 class DccManager {
 public:
-    explicit DccManager(std::string interface, std::string interface_radiotap, int initial_interval_ms = 100);
+    DccManager(std::string interface, std::string interface_radiotap, int initial_interval_ms = 100);
     ~DccManager();
 
     void start();
-    void stop();
-
     void start_limeric();
+    void stop();
 
     float get_current_cbr() const;
     DccState get_current_state() const;
@@ -49,27 +46,40 @@ public:
 
 private:
     void dcc_worker_loop();
+    void limeric_worker_loop();
+    int calculate_limeric_interval(float cbr_percent);
+
+    // Funzioni helper interne per il logging e timestamp
+    std::string get_iso8601_timestamp();
+    std::string dcc_state_to_string(DccState state);
+    void log_telemetry(const std::string& state_or_mode, 
+                       float cbr, 
+                       int interval_ms, 
+                       int tx_power, 
+                       int mcs, 
+                       bool hw_updated);
 
     std::string interface_;
-    std::string interface_radiotap_; 
+    std::string interface_radiotap_;
+    std::atomic<bool> stop_dcc_thread_;
     std::thread dcc_thread_;
-    std::atomic<bool> stop_dcc_thread_{false};
 
-    std::atomic<float> last_known_cbr_{0.0f};
-    std::atomic<DccState> current_dcc_state_{DccState::RELAXED};
+    std::atomic<float> last_known_cbr_;
+    std::atomic<DccState> current_dcc_state_;
     std::atomic<int> current_interval_ms_;
+    double current_tx_rate_ = 10.0; // Inizializzato a 10 Hz (100ms) per LIMERIC
 
-    CBRReader cbr_reader; 
-    RateManager rate_manager; 
-    
-    static constexpr int CBR_POLLING_INTERVAL_MS = 1000; 
+    int sockfd_;
+    struct sockaddr_in cam_program_addr_;
 
-    // Membri per la comunicazione Cross-Layer verso il processo CAM
-    int sockfd_{-1};
-    sockaddr_in cam_program_addr_{};
+    // Oggetti di supporto hardware e rete
+    CBRReader cbr_reader;
+    RateManager rate_manager;
 
-    // Membri per l'algoritmo LIMERIC
-    int calculate_limeric_interval(float cbr_percent);
-    void limeric_worker_loop();
-    double current_tx_rate_{20.0}; // Frequenza di trasmissione corrente (Hz)
+    // Stream del file di log CSV
+    std::ofstream csv_log_file_;
+
+    const int CBR_POLLING_INTERVAL_MS = 100;
 };
+
+#endif // DCC_MANAGER_H
