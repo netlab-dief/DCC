@@ -117,6 +117,9 @@ Core congestion control engine running as a real-time thread:
 - Runs with SCHED_FIFO scheduling at priority 70 for deterministic behavior
 - Polls every 1000ms for CBR updates from the kernel
 - Implements 5-state machine with automatic state transitions
+- Requires 1 second of continuously high CBR before moving to a more restrictive
+  state and 5 seconds of continuously low CBR before moving to a less restrictive
+  state
 - Triggers synchronized power and rate adjustments
 - Sends UDP notifications (127.0.0.1:5555) for inter-process communication
 - Manages monitoring thread lifecycle and graceful shutdown

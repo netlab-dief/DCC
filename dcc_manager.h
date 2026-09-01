@@ -16,6 +16,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // Presumendo le tue inclusioni per la gestione radio e CBR
 #include "CBRReader.h"

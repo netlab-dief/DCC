@@ -143,6 +143,40 @@ void DccManager::dcc_worker_loop() {
     int current_tx_power = 23;
     int current_mcs = 6;
 
+    using SteadyClock = std::chrono::steady_clock;
+    SteadyClock::time_point upward_condition_since;
+    SteadyClock::time_point downward_condition_since;
+    bool upward_condition_active = false;
+    bool downward_condition_active = false;
+
+    const auto state_for_cbr = [&](float cbr_percent) {
+        if (cbr_percent < CBR_LIMIT_ACTIVE_1) return DccState::RELAXED;
+        if (cbr_percent < CBR_LIMIT_ACTIVE_2) return DccState::ACTIVE_1;
+        if (cbr_percent < CBR_LIMIT_ACTIVE_3) return DccState::ACTIVE_2;
+        if (cbr_percent < CBR_LIMIT_RESTRICTIVE) return DccState::ACTIVE_3;
+        return DccState::RESTRICTIVE;
+    };
+
+    const auto upper_threshold_for = [&](DccState state) {
+        switch (state) {
+            case DccState::RELAXED:  return CBR_LIMIT_ACTIVE_1;
+            case DccState::ACTIVE_1: return CBR_LIMIT_ACTIVE_2;
+            case DccState::ACTIVE_2: return CBR_LIMIT_ACTIVE_3;
+            case DccState::ACTIVE_3: return CBR_LIMIT_RESTRICTIVE;
+            default:                 return std::numeric_limits<double>::infinity();
+        }
+    };
+
+    const auto lower_threshold_for = [&](DccState state) {
+        switch (state) {
+            case DccState::ACTIVE_1:    return CBR_LIMIT_ACTIVE_1;
+            case DccState::ACTIVE_2:    return CBR_LIMIT_ACTIVE_2;
+            case DccState::ACTIVE_3:    return CBR_LIMIT_ACTIVE_3;
+            case DccState::RESTRICTIVE: return CBR_LIMIT_RESTRICTIVE;
+            default:                    return -std::numeric_limits<double>::infinity();
+        }
+    };
+
     while (!stop_dcc_thread_) {
         cbr_reader.wrapper_start_reading_cbr();
 
@@ -171,17 +205,37 @@ void DccManager::dcc_worker_loop() {
             DccState old_state = current_dcc_state_.load(std::memory_order_relaxed);
             DccState new_state = old_state;
             int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
+            const DccState instantaneous_state = state_for_cbr(cbr_percent);
+            const auto now = SteadyClock::now();
 
-            if (cbr_percent < CBR_LIMIT_ACTIVE_1) {
-                new_state = DccState::RELAXED;
-            } else if (cbr_percent < CBR_LIMIT_ACTIVE_2) {
-                new_state = DccState::ACTIVE_1;
-            } else if (cbr_percent < CBR_LIMIT_ACTIVE_3) {
-                new_state = DccState::ACTIVE_2;
-            } else if (cbr_percent < CBR_LIMIT_RESTRICTIVE) {
-                new_state = DccState::ACTIVE_3;
+            // UNKNOWN is not an operating state: establish the initial state
+            // immediately, then enforce persistence for subsequent transitions.
+            if (old_state == DccState::UNKNOWN) {
+                new_state = instantaneous_state;
+                upward_condition_active = false;
+                downward_condition_active = false;
+            } else if (cbr_percent >= upper_threshold_for(old_state)) {
+                downward_condition_active = false;
+                if (!upward_condition_active) {
+                    upward_condition_since = now;
+                    upward_condition_active = true;
+                } else if (now - upward_condition_since >= std::chrono::seconds(1)) {
+                    new_state = instantaneous_state;
+                    upward_condition_active = false;
+                }
+            } else if (cbr_percent < lower_threshold_for(old_state)) {
+                upward_condition_active = false;
+                if (!downward_condition_active) {
+                    downward_condition_since = now;
+                    downward_condition_active = true;
+                } else if (now - downward_condition_since >= std::chrono::seconds(5)) {
+                    new_state = instantaneous_state;
+                    downward_condition_active = false;
+                }
             } else {
-                new_state = DccState::RESTRICTIVE;
+                // Entering the current state's band breaks both continuous windows.
+                upward_condition_active = false;
+                downward_condition_active = false;
             }
 
             bool state_changed = (old_state != new_state);
@@ -231,6 +285,10 @@ void DccManager::dcc_worker_loop() {
 
             log_telemetry(dcc_state_to_string(new_state), cbr_percent, new_interval, 
                           current_tx_power, current_mcs, state_changed);
+        } else {
+            // A missing/invalid observation cannot prove continuous satisfaction.
+            upward_condition_active = false;
+            downward_condition_active = false;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(CBR_POLLING_INTERVAL_MS));

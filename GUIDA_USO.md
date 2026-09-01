@@ -98,6 +98,18 @@ In questa modalità il CBR determina uno dei cinque stati seguenti:
 
 Quando cambia stato, il programma aggiorna i parametri radio e invia al processo CAM il nuovo stato come intero a 32 bit.
 
+Le transizioni applicano una persistenza asimmetrica per evitare oscillazioni dovute a
+picchi brevi del CBR:
+
+- verso uno stato più restrittivo, il CBR deve rimanere almeno pari alla soglia
+  superiore per 1 secondo continuo (`min(CBR negli ultimi 1 s) >= soglia`);
+- verso uno stato meno restrittivo, il CBR deve rimanere strettamente inferiore alla
+  soglia inferiore per 5 secondi continui (`max(CBR negli ultimi 5 s) < soglia`).
+
+La prima lettura valida inizializza immediatamente lo stato; le regole di persistenza
+si applicano ai cambiamenti successivi. Una lettura non valida interrompe la finestra
+di persistenza in corso.
+
 ## Avvio in modalità LIMERIC
 
 Per usare l'algoritmo adattativo LIMERIC aggiungere l'opzione `--limeric`:
