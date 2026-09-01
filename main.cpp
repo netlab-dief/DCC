@@ -36,9 +36,10 @@ int main(int argc, char* argv[]) {
     // Controllo parametri minimi obbligatori (nome_programma + interfaccia_standard + interfaccia_radiotap)
     if (argc < 3) {
         std::cerr << "Errore: Parametri mancanti!" << std::endl;
-        std::cerr << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric]" << std::endl;
+        std::cerr << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric] [--fake-cbr]" << std::endl;
         std::cerr << "Esempio Reattivo: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
         std::cerr << "Esempio LIMERIC:  sudo " << argv[0] << " wlan0 wlan1 --limeric" << std::endl;
+        std::cerr << "Esempio Test CBR: sudo " << argv[0] << " wlan0 wlan1 --fake-cbr" << std::endl;
         return 1;
     }
 
@@ -52,18 +53,34 @@ int main(int argc, char* argv[]) {
     std::string interface_radiotap = argv[2]; 
     int initial_interval_ms = 100;
     
-    // Controllo del parametro opzionale LIMERIC
+    // Controllo dei parametri opzionali
     bool use_limeric = false;
-    if (argc >= 4 && std::string(argv[3]) == "--limeric") {
-        use_limeric = true;
+    bool use_fake_cbr = false;
+    for (int i = 3; i < argc; ++i) {
+        const std::string option = argv[i];
+        if (option == "--limeric") {
+            use_limeric = true;
+        } else if (option == "--fake-cbr") {
+            use_fake_cbr = true;
+        } else {
+            std::cerr << "Errore: opzione sconosciuta '" << option << "'." << std::endl;
+            return 1;
+        }
+    }
+
+    if (use_limeric && use_fake_cbr) {
+        std::cerr << "Errore: --fake-cbr è disponibile solo in modalità reattiva, "
+                  << "non insieme a --limeric." << std::endl;
+        return 1;
     }
 
     std::cout << "[MAIN] Interfaccia Rete: " << interface_name << std::endl;
     std::cout << "[MAIN] Interfaccia Radiotap: " << interface_radiotap << std::endl;
     std::cout << "[MAIN] Modalità Algoritmo: " << (use_limeric ? "LIMERIC (Adattativo)" : "Stati ETSI (Reattivo)") << std::endl;
+    std::cout << "[MAIN] Sorgente CBR: " << (use_fake_cbr ? "file fake_cbr_value (TEST)" : "interfaccia wireless") << std::endl;
 
     // Istanziamo il manager
-    DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms);
+    DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms, use_fake_cbr);
 
     // Avviamo il thread corretto in base alla scelta dell'utente
     std::cout << "[MAIN] Avvio del thread DCC Worker..." << std::endl;

@@ -8,9 +8,11 @@ static double map_linear(double x, double in_min, double in_max, double out_min,
     return std::clamp(mapped, out_max, out_min);
 }
 
-DccManager::DccManager(std::string interface, std::string interface_radiotap, int initial_interval_ms)
+DccManager::DccManager(std::string interface, std::string interface_radiotap,
+                       int initial_interval_ms, bool use_fake_cbr)
     : interface_(std::move(interface)), 
       interface_radiotap_(std::move(interface_radiotap)),
+      use_fake_cbr_(use_fake_cbr),
       stop_dcc_thread_(false),
       last_known_cbr_(0.0f),
       current_dcc_state_(DccState::UNKNOWN), 
@@ -147,10 +149,14 @@ void DccManager::dcc_worker_loop() {
         // float raw_cbr = cbr_reader.get_current_cbr();
         float raw_cbr = -1.0f;
         bool read_from_file_success = false;
-        std::ifstream file("fake_cbr_value"); 
-        if (file.is_open()) {
-            if (file >> raw_cbr) {
+        if (use_fake_cbr_) {
+            std::ifstream file("fake_cbr_value");
+            if (file.is_open() && (file >> raw_cbr)) {
                 read_from_file_success = true;
+            } else {
+                std::cerr << "[DCC TEST] Impossibile leggere un CBR valido da "
+                          << "fake_cbr_value; uso temporaneamente il CBR reale."
+                          << std::endl;
             }
         }
 

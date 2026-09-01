@@ -33,7 +33,8 @@ enum class DccState {
 
 class DccManager {
 public:
-    DccManager(std::string interface, std::string interface_radiotap, int initial_interval_ms = 100);
+    DccManager(std::string interface, std::string interface_radiotap,
+               int initial_interval_ms = 100, bool use_fake_cbr = false);
     ~DccManager();
 
     void start();
@@ -61,6 +62,7 @@ private:
 
     std::string interface_;
     std::string interface_radiotap_;
+    bool use_fake_cbr_;
     std::atomic<bool> stop_dcc_thread_;
     std::thread dcc_thread_;
 
