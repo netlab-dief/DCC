@@ -1,5 +1,7 @@
 #include "utils.h"
 #include <unistd.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <cmath>
 #include <cstdarg>
 #include "vehicleDataDef.h"
@@ -206,7 +208,7 @@ int logfprintf(FILE *stream,std::string modulename,const char *format,...) {
 	return retval;
 }
 
-nl_sock_info_t open_nl_socket(std::string interface_name) {
+nl_sock_info_t open_nl_socket(std::string interface_name, int timeout_ms) {
     nl_sock_info_t nl_sock_info;
 
     // Allocate a new netlink socket (that should be freed up later)
@@ -229,6 +231,18 @@ nl_sock_info_t open_nl_socket(std::string interface_name) {
         nl_socket_free(nl_sock_info.nl_sock);
         nl_sock_info.sock_valid=false;
         return nl_sock_info;
+    }
+
+    // Bound acquisition latency, including family resolution, when requested.
+    if (timeout_ms > 0) {
+        timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+        const int fd = nl_socket_get_fd(nl_sock_info.nl_sock);
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+            nl_socket_free(nl_sock_info.nl_sock);
+            nl_sock_info.sock_valid = false;
+            return nl_sock_info;
+        }
     }
 
     // Resolve the family name "nl80211" to the corresponding kernel ID

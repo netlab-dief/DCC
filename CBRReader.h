@@ -39,7 +39,6 @@ class CBRReader {
         void read_cbr_from_netlink(nl_sock_info_t nl_sock_info);
 
         std::string m_dissemination_interface;
-        std::thread m_cbr_thread;
 
         // Spostata in private per impedire accessi diretti non sincronizzati dall'esterno
         CBRData m_cbr_data;

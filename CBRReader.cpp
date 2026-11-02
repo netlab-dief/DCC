@@ -9,6 +9,7 @@ CBRReader::~CBRReader () = default;
 void CBRReader::setupCBRReader(bool verbose, std::string dissemination_interface)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    m_cbr_data = CBRData{};
     m_cbr_data.verbose = verbose;
     m_dissemination_interface = dissemination_interface;
 }
@@ -54,28 +55,41 @@ void CBRReader::start_reading_cbr(nl_sock_info_t m_nl_sock_info)
 void CBRReader::read_cbr_from_netlink(nl_sock_info_t nl_sock_info)
 {
     struct nl_msg *nl_msg = nlmsg_alloc();
+    if (!nl_msg) {
+        free_nl_socket(nl_sock_info);
+        return;
+    }
 
-    genlmsg_put(nl_msg,NL_AUTO_PORT,NL_AUTO_SEQ,nl_sock_info.nl80211_id,0,NLM_F_DUMP | NLM_F_REQUEST,NL80211_CMD_GET_SURVEY,0);
-    nla_put_u32(nl_msg,NL80211_ATTR_IFINDEX,nl_sock_info.ifindex);
+    if (!genlmsg_put(nl_msg,NL_AUTO_PORT,NL_AUTO_SEQ,nl_sock_info.nl80211_id,0,NLM_F_DUMP | NLM_F_REQUEST,NL80211_CMD_GET_SURVEY,0) ||
+        nla_put_u32(nl_msg,NL80211_ATTR_IFINDEX,nl_sock_info.ifindex) < 0) {
+        nlmsg_free(nl_msg);
+        free_nl_socket(nl_sock_info);
+        return;
+    }
 
     nl_socket_modify_cb(nl_sock_info.nl_sock,NL_CB_VALID,NL_CB_CUSTOM,cbr_handler,this);
 
-    nl_send_auto_complete(nl_sock_info.nl_sock,nl_msg);
+    int err = nl_send_auto_complete(nl_sock_info.nl_sock,nl_msg);
+    if (err >= 0) err = nl_recvmsgs_default(nl_sock_info.nl_sock);
+    if (err < 0) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_cbr_data.currentCBR = -1.0f;
+    }
 
-    int err = nl_recvmsgs_default(nl_sock_info.nl_sock);
-    (void) err;
-
+    nlmsg_free(nl_msg);
     free_nl_socket(nl_sock_info);
 }
 
 void CBRReader::wrapper_start_reading_cbr()
 {
-    nl_sock_info_t nl_sock_info = open_nl_socket(m_dissemination_interface);
-    m_cbr_thread = std::thread(&CBRReader::start_reading_cbr, this, nl_sock_info);
-    if(m_cbr_thread.joinable())
     {
-        m_cbr_thread.join();
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_cbr_data.currentCBR = -1.0f;
     }
+    nl_sock_info_t nl_sock_info = open_nl_socket(m_dissemination_interface, 80);
+    if (!nl_sock_info.sock_valid) return;
+    // Synchronous acquisition: errors no longer escape an uncaught child thread.
+    start_reading_cbr(nl_sock_info);
     return;
 }
 

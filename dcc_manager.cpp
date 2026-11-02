@@ -14,7 +14,6 @@ DccManager::DccManager(std::string interface, std::string interface_radiotap,
       interface_radiotap_(std::move(interface_radiotap)),
       use_fake_cbr_(use_fake_cbr),
       stop_dcc_thread_(false),
-      last_known_cbr_(0.0f),
       current_dcc_state_(DccState::UNKNOWN), 
       current_interval_ms_(initial_interval_ms)   
 {
@@ -95,30 +94,60 @@ void DccManager::log_telemetry(const std::string& state_or_mode, float cbr, int 
     }
 }
 
-void DccManager::start() {
-    if (!dcc_thread_.joinable()) {
-        stop_dcc_thread_ = false;
-        dcc_thread_ = std::thread(&DccManager::dcc_worker_loop, this);
-
-        pthread_t native_handle = dcc_thread_.native_handle();
-        struct sched_param param;
-        param.sched_priority = 70;
-        
-        if (pthread_setschedparam(native_handle, SCHED_FIFO, &param) != 0) {
-            std::cerr << "Errore nell'impostazione della priorità del thread DCC" << std::endl;
-        }
+float DccManager::acquire_cbr() {
+    float value = -1.0f;
+    bool from_file = false;
+    if (use_fake_cbr_) {
+        std::ifstream file("fake_cbr_value");
+        from_file = static_cast<bool>(file >> value);
     }
+    if (!from_file) {
+        if (last_cbr_from_file_) cbr_reader.setupCBRReader(false, interface_);
+        cbr_reader.wrapper_start_reading_cbr();
+        value = cbr_reader.get_current_cbr();
+    }
+    const bool source_changed = from_file != last_cbr_from_file_;
+    last_cbr_from_file_ = from_file;
+    return source_changed ? -1.0f : value;
+}
+
+void DccManager::start() { start_worker(false); }
+void DccManager::start_limeric() { start_worker(true); }
+
+void DccManager::start_worker(bool adaptive) {
+    if (dcc_thread_.joinable()) return;
+    last_cbr_from_file_ = false;
+    cbr_reader.setupCBRReader(false, interface_);
+    gate_server_.start();
+    stop_dcc_thread_ = false;
+    try {
+        cbr_sampler_.start([this] { return acquire_cbr(); });
+        dcc_thread_ = std::thread(adaptive ? &DccManager::limeric_worker_loop :
+                                           &DccManager::dcc_worker_loop, this);
+    } catch (...) {
+        stop_dcc_thread_ = true;
+        cbr_sampler_.stop();
+        gate_server_.stop();
+        throw;
+    }
+    struct sched_param param{};
+    param.sched_priority = 70;
+    if (pthread_setschedparam(dcc_thread_.native_handle(), SCHED_FIFO, &param) != 0)
+        std::cerr << "Errore nell'impostazione della priorità del thread DCC" << std::endl;
 }
 
 void DccManager::stop() {
     stop_dcc_thread_ = true;
-    if (dcc_thread_.joinable()) {
-        dcc_thread_.join();
-    }
+    airtime_gate_.disable();
+    cbr_sampler_.stop(); // Also wakes a controller waiting for a sample.
+    if (dcc_thread_.joinable()) dcc_thread_.join();
+    airtime_gate_.disable();
+    gate_server_.stop();
 }
 
 float DccManager::get_current_cbr() const {
-    return last_known_cbr_.load(std::memory_order_relaxed);
+    const auto sample = cbr_sampler_.latest();
+    return sample && sample->fresh(CbrSample::Clock::now()) ? sample->value * 100.0f : -1.0f;
 }
 
 DccState DccManager::get_current_state() const {
@@ -130,297 +159,117 @@ int DccManager::get_current_interval_ms() const {
 }
 
 void DccManager::dcc_worker_loop() {
-    const double CBR_LIMIT_ACTIVE_1 = 30.0;      
-    const double CBR_LIMIT_ACTIVE_2 = 40.0;      
-    const double CBR_LIMIT_ACTIVE_3 = 50.0;      
-    const double CBR_LIMIT_RESTRICTIVE = 65.0; 
-    
     TxPowerManager powerManager;
-    cbr_reader.setupCBRReader(false, interface_);
     rate_manager.setup_rate_manager(interface_radiotap_); 
 
     // Variabili per il tracking del log e del fallback
     int current_tx_power = 23;
     int current_mcs = 6;
 
-    using SteadyClock = std::chrono::steady_clock;
-    SteadyClock::time_point upward_condition_since;
-    SteadyClock::time_point downward_condition_since;
-    bool upward_condition_active = false;
-    bool downward_condition_active = false;
+    DccStateMachine state_machine;
 
-    const auto state_for_cbr = [&](float cbr_percent) {
-        if (cbr_percent < CBR_LIMIT_ACTIVE_1) return DccState::RELAXED;
-        if (cbr_percent < CBR_LIMIT_ACTIVE_2) return DccState::ACTIVE_1;
-        if (cbr_percent < CBR_LIMIT_ACTIVE_3) return DccState::ACTIVE_2;
-        if (cbr_percent < CBR_LIMIT_RESTRICTIVE) return DccState::ACTIVE_3;
-        return DccState::RESTRICTIVE;
-    };
-
-    const auto upper_threshold_for = [&](DccState state) {
-        switch (state) {
-            case DccState::RELAXED:  return CBR_LIMIT_ACTIVE_1;
-            case DccState::ACTIVE_1: return CBR_LIMIT_ACTIVE_2;
-            case DccState::ACTIVE_2: return CBR_LIMIT_ACTIVE_3;
-            case DccState::ACTIVE_3: return CBR_LIMIT_RESTRICTIVE;
-            default:                 return std::numeric_limits<double>::infinity();
-        }
-    };
-
-    const auto lower_threshold_for = [&](DccState state) {
-        switch (state) {
-            case DccState::ACTIVE_1:    return CBR_LIMIT_ACTIVE_1;
-            case DccState::ACTIVE_2:    return CBR_LIMIT_ACTIVE_2;
-            case DccState::ACTIVE_3:    return CBR_LIMIT_ACTIVE_3;
-            case DccState::RESTRICTIVE: return CBR_LIMIT_RESTRICTIVE;
-            default:                    return -std::numeric_limits<double>::infinity();
-        }
-    };
-
+    std::uint64_t cursor = 0;
+    std::optional<std::int64_t> previous_slot;
     while (!stop_dcc_thread_) {
-        cbr_reader.wrapper_start_reading_cbr();
-
-        // float raw_cbr = cbr_reader.get_current_cbr();
-        float raw_cbr = -1.0f;
-        bool read_from_file_success = false;
-        if (use_fake_cbr_) {
-            std::ifstream file("fake_cbr_value");
-            if (file.is_open() && (file >> raw_cbr)) {
-                read_from_file_success = true;
-            } else {
-                std::cerr << "[DCC TEST] Impossibile leggere un CBR valido da "
-                          << "fake_cbr_value; uso temporaneamente il CBR reale."
-                          << std::endl;
-            }
+        const auto sample = cbr_sampler_.wait_next(cursor);
+        if (stop_dcc_thread_) break;
+        if (!sample || !sample->fresh(CbrSample::Clock::now())) {
+            state_machine.invalidate_observation();
+            airtime_gate_.disable();
+            continue;
         }
+        if (previous_slot && sample->utc_slot != *previous_slot + 1)
+            state_machine.invalidate_observation();
+        previous_slot = sample->utc_slot;
+        const float raw_cbr = sample->value;
+        float cbr_percent = raw_cbr * 100.0f;
 
-        if (!read_from_file_success) {
-            raw_cbr = cbr_reader.get_current_cbr();
-        }
+        DccState old_state = current_dcc_state_.load(std::memory_order_relaxed);
+        DccState new_state = old_state;
+        int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
+        new_state = state_machine.update(cbr_percent, sample->measured_at);
 
-        if (raw_cbr >= 0.0f) {
-            float cbr_percent = raw_cbr * 100.0f;
-            last_known_cbr_.store(cbr_percent, std::memory_order_relaxed);
+        bool state_changed = (old_state != new_state);
+        airtime_gate_.configure(0.03, std::chrono::milliseconds(
+            DccStateMachine::parameters_for(new_state).interval_ms), sample->measured_at);
 
-            DccState old_state = current_dcc_state_.load(std::memory_order_relaxed);
-            DccState new_state = old_state;
-            int new_interval = current_interval_ms_.load(std::memory_order_relaxed);
-            const DccState instantaneous_state = state_for_cbr(cbr_percent);
-            const auto now = SteadyClock::now();
+        if (state_changed) {
+            const DccParameters parameters = DccStateMachine::parameters_for(new_state);
+            new_interval = parameters.interval_ms;
+            current_tx_power = parameters.tx_power_dbm;
+            current_mcs = parameters.mcs_mbps;
 
-            // UNKNOWN is not an operating state: establish the initial state
-            // immediately, then enforce persistence for subsequent transitions.
-            if (old_state == DccState::UNKNOWN) {
-                new_state = instantaneous_state;
-                upward_condition_active = false;
-                downward_condition_active = false;
-            } else if (cbr_percent >= upper_threshold_for(old_state)) {
-                downward_condition_active = false;
-                if (!upward_condition_active) {
-                    upward_condition_since = now;
-                    upward_condition_active = true;
-                } else if (now - upward_condition_since >= std::chrono::seconds(1)) {
-                    new_state = instantaneous_state;
-                    upward_condition_active = false;
-                }
-            } else if (cbr_percent < lower_threshold_for(old_state)) {
-                upward_condition_active = false;
-                if (!downward_condition_active) {
-                    downward_condition_since = now;
-                    downward_condition_active = true;
-                } else if (now - downward_condition_since >= std::chrono::seconds(5)) {
-                    new_state = instantaneous_state;
-                    downward_condition_active = false;
-                }
-            } else {
-                // Entering the current state's band breaks both continuous windows.
-                upward_condition_active = false;
-                downward_condition_active = false;
+            powerManager.set_tx_power(interface_, current_tx_power);
+            rate_manager.set_fixed_rate_netlink(current_mcs);
+
+            current_dcc_state_.store(new_state, std::memory_order_relaxed);
+            current_interval_ms_.store(new_interval, std::memory_order_relaxed);
+
+            if (sockfd_ >= 0) {
+                int32_t state_to_send = static_cast<int32_t>(new_state);
+                sendto(sockfd_, &state_to_send, sizeof(state_to_send), 0,
+                       (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
             }
 
-            bool state_changed = (old_state != new_state);
-
-            if (state_changed) {
-                switch (new_state) {
-                    case DccState::RELAXED:
-                        new_interval = 50; 
-                        current_tx_power = 23; current_mcs = 6;
-                        break;
-                    case DccState::ACTIVE_1:
-                        new_interval = 100; 
-                        current_tx_power = 19; current_mcs = 12;
-                        break;
-                    case DccState::ACTIVE_2:
-                        new_interval = 200; 
-                        current_tx_power = 16; current_mcs = 18;
-                        break;
-                    case DccState::ACTIVE_3:
-                        new_interval = 400; 
-                        current_tx_power = 13; current_mcs = 24;
-                        break;
-                    case DccState::RESTRICTIVE:
-                        new_interval = 1000; 
-                        current_tx_power = 10; current_mcs = 24;
-                        break;
-                    case DccState::UNKNOWN:
-                        break;
-                }
-
-                powerManager.set_tx_power(interface_, current_tx_power);
-                rate_manager.set_fixed_rate_netlink(current_mcs);
-
-                current_dcc_state_.store(new_state, std::memory_order_relaxed);
-                current_interval_ms_.store(new_interval, std::memory_order_relaxed);
-
-                if (sockfd_ >= 0) {
-                    int32_t state_to_send = static_cast<int32_t>(new_state);
-                    sendto(sockfd_, &state_to_send, sizeof(state_to_send), 0,
-                           (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
-                }
-
-                std::cout << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
-                          << " | CBR: " << std::fixed << std::setprecision(2) << cbr_percent 
-                          << "% | T_off: " << new_interval << "ms\033[0m" << std::endl;
-            }
-
-            log_telemetry(dcc_state_to_string(new_state), cbr_percent, new_interval, 
-                          current_tx_power, current_mcs, state_changed);
-        } else {
-            // A missing/invalid observation cannot prove continuous satisfaction.
-            upward_condition_active = false;
-            downward_condition_active = false;
+            std::cout << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
+                      << " | CBR: " << std::fixed << std::setprecision(2) << cbr_percent
+                      << "% | T_off: " << new_interval << "ms\033[0m" << std::endl;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(CBR_POLLING_INTERVAL_MS));
+        log_telemetry(dcc_state_to_string(new_state), cbr_percent, new_interval,
+                      current_tx_power, current_mcs, state_changed);
     }
-}
-
-void DccManager::start_limeric() {
-    if (!dcc_thread_.joinable()) {
-        stop_dcc_thread_ = false;
-        dcc_thread_ = std::thread(&DccManager::limeric_worker_loop, this);
-
-        pthread_t native_handle = dcc_thread_.native_handle();
-        struct sched_param param;
-        param.sched_priority = 70; 
-        
-        if (pthread_setschedparam(native_handle, SCHED_FIFO, &param) != 0) {
-            std::cerr << "Errore nell'impostazione della priorità del thread LIMERIC" << std::endl;
-        }
-    }
-}
-
-int DccManager::calculate_limeric_interval(float cbr_percent) {
-    const double CBR_TARGET = 0.68; 
-    const double ALPHA = 0.016;     
-    const double BETA = 0.0012;     
-    
-    double cbr_fraction = static_cast<double>(cbr_percent) / 100.0;
-    double new_rate = (1.0 - ALPHA) * current_tx_rate_ + BETA * (CBR_TARGET - cbr_fraction);
-
-    const double MAX_RATE = 40.0; 
-    const double MIN_RATE = 1.0;  
-    new_rate = std::clamp(new_rate, MIN_RATE, MAX_RATE);
-
-    current_tx_rate_ = new_rate;
-    return static_cast<int>(1000.0 / new_rate);
 }
 
 void DccManager::limeric_worker_loop() {
     TxPowerManager powerManager;
-    cbr_reader.setupCBRReader(false, interface_);
-    rate_manager.setup_rate_manager(interface_radiotap_); 
+    rate_manager.setup_rate_manager(interface_radiotap_);
+    DccAdaptive controller;
+    int last_notified_interval = -1;
+    std::cout << "[DCC INIT] ETSI adaptive DCC; airtime gate on 127.0.0.1:5556" << std::endl;
 
-    const int LIMERIC_POLLING_MS = 200; 
-    const float CBR_TARGET = 60.0f;     
-    const float ALPHA = 0.1f;          
-    const float BETA = 1.0f / 150.0f;  
-
-    const float G_MAX = 0.005f;
-    const float G_MIN = -0.005f;
-
-    const float DELTA_MIN = 0.0025f;   
-    const float DELTA_MAX = 0.03f;     
-    const float T_ON_MS = 0.5f; 
-
-    float current_delta = DELTA_MIN;   
-    float cbr_its = 0.0f;              
-    bool is_first_iteration = true;
-
-    std::cout << "[DCC INIT] Loop LIMERIC Adattativo avviato." << std::endl;
-
+    std::uint64_t cursor = 0;
+    std::optional<std::int64_t> previous_slot;
     while (!stop_dcc_thread_) {
-        cbr_reader.wrapper_start_reading_cbr();
-        float raw_cbr = cbr_reader.get_current_cbr();
-
-        if (raw_cbr >= 0.0f) {
-            float cbr_percent = raw_cbr * 100.0f;
-            last_known_cbr_.store(cbr_percent, std::memory_order_relaxed);
-
-            if (is_first_iteration) {
-                cbr_its = cbr_percent;
-                is_first_iteration = false;
-            } else {
-                cbr_its = 0.5f * cbr_its + 0.5f * cbr_percent;
-            }
-
-            float error = CBR_TARGET - cbr_its;
-            float delta_offset = BETA * error;
-
-            if (error > 0) {
-                if (delta_offset > G_MAX) delta_offset = G_MAX;
-            } else {
-                if (delta_offset < G_MIN) delta_offset = G_MIN;
-            }
-
-            float new_delta = (1.0f - ALPHA) * current_delta + delta_offset;
-
-            if (new_delta > DELTA_MAX) new_delta = DELTA_MAX;
-            if (new_delta < DELTA_MIN) new_delta = DELTA_MIN;
-            current_delta = new_delta;
-
-            int new_interval = static_cast<int>(T_ON_MS / current_delta);
-
-            if (new_interval < 25) new_interval = 25;
-            if (new_interval > 1000) new_interval = 1000;
-
-            current_tx_rate_ = 1000.0f / static_cast<float>(new_interval);
-            int old_interval = current_interval_ms_.exchange(new_interval, std::memory_order_relaxed);
-
-            double target_power = map_linear(current_tx_rate_, 1.0, 40.0, 10.0, 23.0);
-            int tx_power_int = static_cast<int>(target_power);
-            powerManager.set_tx_power(interface_, tx_power_int);
-
-            int target_mcs_netlink = 12; 
-            if (cbr_percent > 30.0f) {
-                target_mcs_netlink = static_cast<int>(map_linear(cbr_percent, 30.0, 65.0, 12.0, 24.0));
-                if (target_mcs_netlink > 12 && target_mcs_netlink < 18) target_mcs_netlink = 12;
-                else if (target_mcs_netlink >= 18 && target_mcs_netlink < 24) target_mcs_netlink = 18;
-                else if (target_mcs_netlink >= 24) target_mcs_netlink = 24;
-            }
-            rate_manager.set_fixed_rate_netlink(target_mcs_netlink);
-
-            bool significant_change = (std::abs(new_interval - old_interval) >= 5);
-
-            if (significant_change) {
-                if (sockfd_ >= 0) {
-                    int32_t interval_to_send = static_cast<int32_t>(new_interval);
-                    sendto(sockfd_, &interval_to_send, sizeof(interval_to_send), 0,
-                           (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
-                }
-
-                std::cout << "[DCC LIMERIC] CBR Sensed: " << std::fixed << std::setprecision(1) << cbr_percent 
-                          << "% | CBR Filtered: " << cbr_its << "%"
-                          << " | Delta: " << std::setprecision(5) << current_delta
-                          << " | Tx Rate: " << std::setprecision(2) << current_tx_rate_ << " Hz"
-                          << " | T_off Target: " << new_interval << " ms"
-                          << " | Power: " << tx_power_int << " dBm"
-                          << " | MCS Netlink: " << target_mcs_netlink << std::endl;
-            }
-
-            log_telemetry("LIMERIC", cbr_percent, new_interval, tx_power_int, target_mcs_netlink, significant_change);
+        const auto sample = cbr_sampler_.wait_next(cursor);
+        if (stop_dcc_thread_) break;
+        if (!sample || !sample->fresh(CbrSample::Clock::now())) {
+            controller.invalidate();
+            airtime_gate_.disable();
+            continue;
         }
+        if (previous_slot && sample->utc_slot != *previous_slot + 1) controller.invalidate();
+        previous_slot = sample->utc_slot;
+        const float raw_cbr = sample->value;
+        if (!controller.observe(raw_cbr, sample->utc_slot)) continue;
+        airtime_gate_.configure(controller.delta(), std::chrono::milliseconds(25), sample->measured_at);
+        // Advisory CAM interval only; per-packet grants use reported TX airtime.
+        const int interval = airtime_gate_.suggested_interval_ms();
+        current_interval_ms_.store(interval, std::memory_order_relaxed);
+        current_tx_rate_ = 1000.0 / interval;
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(LIMERIC_POLLING_MS));
+        // Existing project-specific radio policy, separate from the ETSI delta controller.
+        const int power = static_cast<int>(map_linear(current_tx_rate_, 1.0, 40.0, 10.0, 23.0));
+        int rate = 12;
+        if (raw_cbr > 0.30f) {
+            const int mapped = static_cast<int>(map_linear(raw_cbr * 100.0, 30.0, 65.0, 12.0, 24.0));
+            rate = mapped >= 24 ? 24 : (mapped >= 18 ? 18 : 12);
+        }
+        powerManager.set_tx_power(interface_, power);
+        rate_manager.set_fixed_rate_netlink(rate);
+        const bool notify = last_notified_interval < 0 || std::abs(interval - last_notified_interval) >= 5;
+        if (notify) {
+            if (sockfd_ >= 0) {
+                const int32_t value = interval;
+                if (sendto(sockfd_, &value, sizeof(value), 0,
+                    reinterpret_cast<sockaddr*>(&cam_program_addr_), sizeof(cam_program_addr_)) >= 0)
+                    last_notified_interval = interval;
+            }
+            std::cout << "[DCC ADAPTIVE] CBR: " << raw_cbr * 100.0f
+                      << "% | filtered: " << controller.filtered_cbr() * 100.0
+                      << "% | delta: " << controller.delta()
+                      << " | advisory interval: " << interval << " ms" << std::endl;
+        }
+        log_telemetry("LIMERIC", raw_cbr * 100.0f, interval, power, rate, notify);
     }
 }

@@ -71,6 +71,17 @@ To rebuild from scratch:
 make rebuild
 ```
 
+## Tests
+
+Run the C++ state-machine tests and the Python generator tests with:
+
+```bash
+make test
+```
+
+The same build and test commands run automatically on every push and pull request
+through GitHub Actions.
+
 ## Usage
 
 Run the DCC system with two wireless interfaces:
@@ -115,7 +126,7 @@ The system operates in five different states based on channel congestion:
 ### DCC Manager (`dcc_manager.h/cpp`)
 Core congestion control engine running as a real-time thread:
 - Runs with SCHED_FIFO scheduling at priority 70 for deterministic behavior
-- Polls every 1000ms for CBR updates from the kernel
+- Polls every 100ms for CBR updates from the kernel
 - Implements 5-state machine with automatic state transitions
 - Requires 1 second of continuously high CBR before moving to a more restrictive
   state and 5 seconds of continuously low CBR before moving to a less restrictive
@@ -262,3 +273,34 @@ When contributing to this project:
 ---
 
 For more information and issues, please refer to the project repository.
+
+
+## Adaptive DCC and per-packet admission
+
+`--limeric` uses the ETSI TS 102 687 V1.2.1 §5.4 delta controller, with 100 ms
+CBR samples and UTC-aligned 200 ms updates. Reactive transitions move only to
+adjacent states after the existing persistence delays.
+
+Both modes expose a local UDP airtime gate at `127.0.0.1:5556`. Transmitters must
+request admission before **every** packet and report actual PHY airtime after TX
+completion. `airtime_client.py` provides a client; the external CAM/driver must
+supply the actual transmission callback. The gate cannot enforce traffic that
+bypasses it. The port 5555 interval is advisory and no longer assumes 0.5 ms airtime.
+See [GUIDA_USO.md](GUIDA_USO.md)
+for the protocol, conservative pacing policy and recovery rules.
+
+`make test` covers adaptive numerical reference values, saturation, sampling gaps,
+adjacent state transitions, variable airtime accounting, missing feedback,
+UDP admission/report exchanges, and the Python client.
+
+
+## Independent CBR acquisition
+
+`CbrSampler` owns a dedicated 100 ms UTC-aligned acquisition thread. Both DCC
+controllers consume timestamped, validated samples from a bounded buffer rather
+than querying Netlink themselves. Adaptive updates still use consecutive 100 ms
+pairs on 200 ms boundaries. Slow radio configuration does not delay sampling;
+missing, late or stale samples invalidate controller continuity and gate admission.
+The monitor reads the latest acquisition directly. See the usage guide for timing,
+restart and measurement-validity details. `make test` includes acquisition tests
+with a blocked consumer, driver exceptions, late reads, recovery and shutdown.

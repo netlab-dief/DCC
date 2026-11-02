@@ -22,15 +22,10 @@
 #include "CBRReader.h"
 #include "TxPowerManager.h"
 #include "rate_manager.h"
-
-enum class DccState {
-    UNKNOWN = 0,
-    RELAXED = 1,
-    ACTIVE_1 = 2,
-    ACTIVE_2 = 3,
-    ACTIVE_3 = 4,
-    RESTRICTIVE = 5
-};
+#include "dcc_state_machine.h"
+#include "dcc_adaptive.h"
+#include "gate_server.h"
+#include "cbr_sampler.h"
 
 class DccManager {
 public:
@@ -47,9 +42,10 @@ public:
     int get_current_interval_ms() const;
 
 private:
+    void start_worker(bool adaptive);
+    float acquire_cbr();
     void dcc_worker_loop();
     void limeric_worker_loop();
-    int calculate_limeric_interval(float cbr_percent);
 
     // Funzioni helper interne per il logging e timestamp
     std::string get_iso8601_timestamp();
@@ -64,10 +60,10 @@ private:
     std::string interface_;
     std::string interface_radiotap_;
     bool use_fake_cbr_;
+    bool last_cbr_from_file_ = false; // Accessed only by the acquisition thread.
     std::atomic<bool> stop_dcc_thread_;
     std::thread dcc_thread_;
 
-    std::atomic<float> last_known_cbr_;
     std::atomic<DccState> current_dcc_state_;
     std::atomic<int> current_interval_ms_;
     double current_tx_rate_ = 10.0; // Inizializzato a 10 Hz (100ms) per LIMERIC
@@ -77,12 +73,15 @@ private:
 
     // Oggetti di supporto hardware e rete
     CBRReader cbr_reader;
+    CbrSampler cbr_sampler_;
     RateManager rate_manager;
+
+    AirtimeGate airtime_gate_;
+    GateServer gate_server_{airtime_gate_};
 
     // Stream del file di log CSV
     std::ofstream csv_log_file_;
 
-    const int CBR_POLLING_INTERVAL_MS = 100;
 };
 
 #endif // DCC_MANAGER_H

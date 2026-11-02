@@ -32,7 +32,7 @@ std::string to_string(DccState state, bool limeric_enabled) {
     }
 }
 
-int main(int argc, char* argv[]) {
+int run(int argc, char* argv[]) {
     // Controllo parametri minimi obbligatori (nome_programma + interfaccia_standard + interfaccia_radiotap)
     if (argc < 3) {
         std::cerr << "Errore: Parametri mancanti!" << std::endl;
@@ -115,4 +115,12 @@ int main(int argc, char* argv[]) {
 
     std::cout << "[MAIN] Thread fermato. Programma terminato con successo." << std::endl;
     return 0;
+}
+
+int main(int argc, char* argv[]) {
+    try { return run(argc, argv); }
+    catch (const std::exception& error) {
+        std::cerr << "[DCC ERROR] " << error.what() << std::endl;
+        return 1;
+    }
 }

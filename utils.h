@@ -42,7 +42,7 @@ double get_rssi_from_iw(uint8_t macaddr[6],std::string interface_name);
 // This function returns a TimestampIts (as defined in ETSI-ITS-CDD.asn) for the referenceTime field in CPMs v2
 uint64_t get_timestamp_ms_cpm(void);
 
-nl_sock_info_t open_nl_socket(std::string interface_name);
+nl_sock_info_t open_nl_socket(std::string interface_name, int timeout_ms = 0);
 void free_nl_socket(nl_sock_info_t nl_sock_info);
 double get_rssi_from_netlink(uint8_t macaddr[6],nl_sock_info_t nl_sock_info);
 std::unordered_map<std::string,double> get_all_rssi_from_netlink(nl_sock_info_t nl_sock_info);

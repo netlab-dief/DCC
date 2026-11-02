@@ -1,5 +1,12 @@
 *.o
 dcc
-*.png
-*.csv
+dcc_telemetry_log.csv
+cbr_trace_log.csv
 fake_cbr_value
+__pycache__/
+*.py[cod]
+tests/test_dcc_state_machine
+
+tests/test_dcc_control
+
+tests/test_cbr_sampler
