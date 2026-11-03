@@ -90,9 +90,8 @@ void DccManager::log_telemetry(const std::string& state_or_mode, float cbr, int 
                   << mcs << ","
                   << (hw_updated ? "YES" : "NO") << "\n";
     
-    if (hw_updated) {
-        csv_log_file_.flush();
-    }
+    // Readers such as the dashboard must see samples even in a stable state.
+    csv_log_file_.flush();
 }
 
 float DccManager::acquire_cbr() {

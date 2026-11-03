@@ -188,6 +188,34 @@ new schema and leaves the previous `cam_telemetry_log.csv` unchanged. No counter
 claims hardware confirmation. See the [CAM telemetry guide](GUIDA_USO.md#telemetria-cam).
 Press Ctrl+C or send SIGTERM to stop.
 
+## Terminal dashboard (ncurses)
+
+With DCC running, open a second terminal in the telemetry directory:
+
+```bash
+python3 dashboard.py
+# Or point to another local telemetry directory:
+python3 dashboard.py --log-dir /path/to/logs
+```
+
+The read-only dashboard uses Python's standard `curses` module (ncurses on
+Linux/macOS), without pip dependencies or administrator privileges. Use a terminal
+of at least 72 columns and 24 rows. It refreshes four times per second and shows
+the latest logged CBR, reactive state or adaptive mode, advisory interval,
+requested power/bitrate, CBR sample history and CAM counters, driver enqueue rate,
+mean waits and estimated airtime. The graph displays up to one terminal width of
+samples; its time range is printed below it. It is not a fixed-duration plot.
+
+Missing files are retried automatically. DCC samples older than one second and
+CAM samples older than three seconds are marked stale; historical values remain
+visible. This describes log freshness, not gate admission or radio health. CAM
+telemetry appears only when the CAM sender is enabled; its counters refer to the
+latest logged CAM session. The dashboard follows file replacement and truncation.
+It uses the local clock to interpret DCC timestamps, so run it on the same host.
+Press `q`, Escape or Ctrl+C to close the dashboard; the separate DCC process keeps
+running. Rebuild DCC after updating to ensure every telemetry record is flushed,
+including when the controller state remains stable.
+
 ## Synthetic CBR and tests
 
 In one terminal:

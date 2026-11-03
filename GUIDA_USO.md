@@ -608,3 +608,34 @@ campionamento CBR e CAM, più test Python del client e del generatore CBR.
 I test CAM coprono anche il flag forzato, i trigger di movimento e N_GenCam.
 Non serve una radio; i test UDP richiedono accesso ai socket locali.
 La verifica con driver e radio Linux resta distinta dai test senza hardware.
+
+## Dashboard nel terminale (ncurses)
+
+Con DCC in esecuzione, aprire un secondo terminale nella stessa directory:
+
+```bash
+python3 dashboard.py
+```
+
+Per leggere i log da un'altra directory locale:
+
+```bash
+python3 dashboard.py --log-dir /percorso/dei/log
+```
+
+Richiede Python 3 con il modulo standard `curses` e un terminale di almeno
+72 colonne per 24 righe; non servono pacchetti pip o privilegi amministrativi.
+Mostra CBR, stato reattivo o modalita adattativa, intervallo indicativo, potenza e
+bitrate richiesti, storico CBR e telemetria CAM (contatori, frequenza di accodamento
+al driver, attese medie e airtime stimato). Il grafico contiene gli ultimi campioni
+che entrano nella larghezza del terminale, con gli estremi temporali indicati.
+
+I file mancanti vengono cercati automaticamente. Un campione DCC piu vecchio di
+un secondo o CAM piu vecchio di tre secondi viene segnalato come fermo; i valori
+storici restano visibili. La freschezza dei log non conferma lo stato del gate o
+della radio. Senza CAM abilitati la relativa sezione resta in attesa. I contatori
+CAM appartengono all'ultima sessione registrata. Eseguire la dashboard sullo stesso
+host dei log, per interpretare correttamente i timestamp locali DCC.
+
+`q`, Esc o Ctrl+C chiudono solo la dashboard. Ricompilare DCC dopo l'aggiornamento:
+ora ogni campione CSV viene reso visibile anche quando lo stato resta stabile.
