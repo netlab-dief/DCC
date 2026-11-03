@@ -47,6 +47,7 @@ and controlled transmitter.
 | `cam/cam_timing.h` | Generation bounds, movement triggers, N_GenCam and optional forced 100 ms policy |
 | `cam/cam_generation.h` | Construct CAMs independently of TX; maintain pending slot, source validity, history and expiry |
 | `cam/cam_message.cpp/.h` | Parse/check RMC, encode CAM UPER, serialize radiotap/802.11/GN/BTP frames |
+| `cam/cam_telemetry.h` | Thread-safe lifecycle counters, TX timing snapshots and append-only CAM CSV with interval TX rate |
 | `cam/cam_sender.cpp/.h` | Run producer and transmitter, inject on the second interface and wait for driver feedback |
 | `cam/UtilsEncode/` | Bundled generated ASN.1 codec and mandatory CAM construction helper |
 | `cam/Asn1_schemas/` | Bundled ASN.1 schema sources |

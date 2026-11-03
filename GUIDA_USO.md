@@ -262,7 +262,8 @@ Durante l'esecuzione, il monitor principale stampa ogni secondo:
 - intervallo del controller (`T_off` nel monitor): minimo di stato in modalità
   reattiva, valore indicativo derivato dal gate in modalità adattativa.
 
-Il monitor non misura la frequenza effettiva di invio dei CAM. All'avvio il sender
+Con CAM attivi, una riga `[CAM MONITOR]` riporta contatori e frequenza delle TX
+confermate (vedi [Telemetria CAM](#telemetria-cam)). All'avvio il sender
 CAM stampa interfaccia, priorità/categoria EDCA, politica di generazione e porta
 richiesta per il riscontro del driver.
 
@@ -306,6 +307,45 @@ Il file è aperto in modalità append, quindi i nuovi dati vengono aggiunti alle
 I campi di potenza e bitrate sono richieste del controller, non misure. Il CSV
 non registra il numero di CAM effettivamente trasmessi. Per conservare log
 distinti, rinominare o spostare il CSV tra un'esecuzione e l'altra.
+
+## Telemetria CAM
+
+Attivando `--cam-static` oppure `--cam-gps`, viene creato automaticamente
+`cam_telemetry_log.csv` nella directory di esecuzione. Il monitor e il CSV sono
+aggiornati ogni secondo nominale dal ciclo principale; viene salvato anche un
+campione finale dopo l'arresto del sender, inclusi i completamenti o gli errori
+arrivati durante la chiusura. Il CSV è in append: i contatori ripartono da zero
+per ogni avvio, identificato da `Session_Unix_ms`. Non servono nuovi flag.
+
+| Colonna | Significato |
+| --- | --- |
+| `Session_Unix_ms`, `Timestamp_Unix_ms` | Avvio della sessione e istante del campione, millisecondi Unix UTC |
+| `Elapsed_s` | Secondi monotoni dall'apertura del log |
+| `Generated` | CAM costruiti con successo e pubblicati nello slot di attesa |
+| `Replaced` | CAM ancora validi sostituiti nello slot da un CAM più recente |
+| `Expired` | CAM rimossi dallo slot per scadenza o lifetime residua inferiore a 50 ms |
+| `Invalidated` | CAM rimossi dallo slot perché la sorgente non è più valida; non conta i tick senza fix |
+| `Construction_Overruns` | Costruzioni scartate per raggiungimento del limite di 50 ms, escluse da `Generated` |
+| `Submitted` | Frame accodati con successo dal socket radio, ancora senza garanzia di completamento PHY |
+| `TX_Confirmed` | Invii con feedback PHY valido e REPORT accettato dal gate |
+| `TX_Errors` | Operazioni di ammissione/invio/feedback fallite; un arresto durante l'attesa non è un errore |
+| `TX_Hz` | Incremento di `TX_Confirmed` diviso per i secondi monotoni effettivi dall'ultimo campione |
+| `Queue_Mean_ms` | Media cumulativa, sui frame accodati, dalla generazione all'inizio della chiamata di invio |
+| `Gate_Mean_ms` | Media cumulativa, sui frame accodati, dalla prima selezione della stessa versione al suo invio; riparte quando cambia il CAM selezionato |
+| `Feedback_Mean_ms` | Media cumulativa, sulle TX confermate, dall'ammissione al ritorno del callback che invia e attende il feedback; include preparazione, invio e attesa del bridge |
+| `PHY_Airtime_us` | Somma degli airtime reali riportati dalle TX confermate, non del debito prudenziale addebitato dal gate |
+
+I contatori sono cumulativi nella sessione; `TX_Hz` riguarda il singolo intervallo
+di campionamento. Le medie senza osservazioni valgono zero. Una TX incerta può
+incrementare `Submitted` e `TX_Errors` senza incrementare `TX_Confirmed`.
+Le conferme attestano il completamento locale segnalato dal bridge, non la ricezione
+del broadcast da parte di altri veicoli. Le attese non misurano separatamente le
+code interne del driver. I campioni concorrenti possono cogliere un CAM tra due
+passaggi del suo ciclo di vita; i contatori non costituiscono un bilancio istantaneo.
+
+Il log CAM si apre solo con CAM attivi. Un errore di apertura o di scrittura viene
+segnalato; durante la chiusura un errore di salvataggio non impedisce l'arresto dei
+worker. Il CSV DCC esistente mantiene il proprio formato.
 
 ## Notifiche per processi CAM esterni
 

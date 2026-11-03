@@ -83,6 +83,7 @@ private:
     AirtimeGate airtime_gate_;
     GateServer gate_server_{airtime_gate_};
     std::unique_ptr<cam::Sender> cam_sender_;
+    std::unique_ptr<cam::TelemetryLog> cam_telemetry_log_;
 
     // Stream del file di log CSV
     std::ofstream csv_log_file_;

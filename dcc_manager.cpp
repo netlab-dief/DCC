@@ -139,7 +139,15 @@ void DccManager::start_worker(bool adaptive) {
 void DccManager::stop() {
     if (cam_sender_) {
         cam_sender_->stop();
+        // Preserve completions/errors that arrived during shutdown, including
+        // exception unwinding. Logging must not prevent worker cleanup.
+        try {
+            if (cam_telemetry_log_) cam_telemetry_log_->sample(cam_sender_->telemetry());
+        } catch (const std::exception& error) {
+            std::cerr << "[CAM TELEMETRY] " << error.what() << std::endl;
+        }
         cam_sender_.reset();
+        cam_telemetry_log_.reset();
     }
     stop_dcc_thread_ = true;
     airtime_gate_.disable();
@@ -152,12 +160,25 @@ void DccManager::stop() {
 void DccManager::start_cam(const cam::Options& options) {
     if (!options.enabled || cam_sender_) return;
     if (!dcc_thread_.joinable()) throw std::runtime_error("Start DCC before CAM sender");
+    cam_telemetry_log_ = std::make_unique<cam::TelemetryLog>("cam_telemetry_log.csv");
     cam_sender_ = std::make_unique<cam::Sender>(airtime_gate_, interface_radiotap_, options,
         [this] { return get_current_interval_ms(); });
 }
 
 void DccManager::check_cam() {
-    if (cam_sender_) cam_sender_->check();
+    if (!cam_sender_) return;
+    const auto data = cam_sender_->telemetry();
+    const double hz = cam_telemetry_log_->sample(data);
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(2)
+         << "[CAM MONITOR] Generati: " << data.generated << " | Sostituiti: " << data.replaced
+         << " | Scaduti: " << data.expired << " | Invalidati: " << data.invalidated
+         << " | Accodati: " << data.submitted << " | TX confermate: " << data.confirmed
+         << " | TX: " << hz << " Hz | Errori TX: " << data.tx_errors
+         << " | Attesa media: " << (data.submitted ? data.queue_ms / data.submitted : 0) << " ms"
+         << " | Feedback medio: " << (data.confirmed ? data.feedback_ms / data.confirmed : 0) << " ms";
+    std::cout << line.str() << std::endl;
+    cam_sender_->check();
 }
 
 float DccManager::get_current_cbr() const {

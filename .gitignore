@@ -12,3 +12,5 @@ tests/test_dcc_control
 
 tests/test_cbr_sampler
 tests/test_cam
+
+cam_telemetry_log.csv

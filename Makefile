@@ -61,7 +61,7 @@ test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sam
 	./tests/test_cbr_sampler
 	./tests/test_cam
 
-tests/test_cam: tests/test_cam.cpp cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
+tests/test_cam: tests/test_cam.cpp cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h cam/cam_telemetry.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. -Icam/UtilsEncode tests/test_cam.cpp cam/cam_message.cpp cam/cam_sender.cpp airtime_gate.cpp $(C_OBJS) -o $@
 
 tests/test_dcc_state_machine: tests/test_dcc_state_machine.cpp dcc_state_machine.cpp dcc_state_machine.h

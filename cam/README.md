@@ -209,6 +209,16 @@ certificazione dello stack o dell'hardware e non include una sorgente CAN,
 le confidenze GNSS o un driver per i riscontri TX.
 Le notifiche UDP storiche sulla porta 5555 restano disponibili ai processi esterni.
 
+## Telemetria
+
+Con CAM attivi, `[CAM MONITOR]` mostra ogni secondo nominale generati,
+sostituiti, scaduti, invalidati, accodati, TX confermate, errori e frequenza TX,
+oltre alle attese medie. `cam_telemetry_log.csv` salva questi contatori con
+identificativo di sessione, tempi medi di coda/gate/feedback e airtime reale.
+La frequenza conta esclusivamente completamenti con feedback valido e REPORT
+accettato. Il log include un campione finale dopo la chiusura del sender.
+Vedi [colonne e definizioni](../GUIDA_USO.md#telemetria-cam).
+
 ## Verifica
 
 `make test` comprende parsing GPS, codifica/decodifica UPER, struttura dei frame,

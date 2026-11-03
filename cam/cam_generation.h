@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cam_timing.h"
+#include "cam_telemetry.h"
 #include <deque>
 #include <mutex>
 
@@ -31,20 +32,22 @@ class GenerationBuffer {
 public:
     using Clock = GenerationTiming::Clock;
     GenerationBuffer(std::uint32_t station_id, std::array<std::uint8_t, 6> mac,
-                     std::uint8_t priority = default_priority, bool force_100ms = false)
-        : station_id_(station_id), mac_(mac), priority_(priority), policy_(force_100ms) {}
+                     std::uint8_t priority = default_priority, bool force_100ms = false,
+                     Telemetry* telemetry = nullptr)
+        : station_id_(station_id), mac_(mac), priority_(priority), policy_(force_100ms), telemetry_(telemetry) {}
 
     bool generate(const Position& position, Clock::time_point now, std::uint64_t wall_ms,
                   int dcc_ms, Clock::time_point source_valid_until = Clock::time_point::max()) {
         const auto started = Clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
+        expire(now);
         if (position.latitude < -900000000 || position.latitude > 900000000 ||
             position.longitude < -1800000000 || position.longitude > 1800000000 ||
             position.speed < 0 || position.speed > 16383 || position.heading < 0 || position.heading > 3601 ||
             now >= source_valid_until || (position.sample_timestamp_ms &&
             ((*position.sample_timestamp_ms > wall_ms && *position.sample_timestamp_ms - wall_ms > 2000) ||
              (wall_ms > *position.sample_timestamp_ms && wall_ms - *position.sample_timestamp_ms > 2000)))) {
-            pending_.reset();
+            discard(Telemetry::Event::invalidated);
             return false;
         }
         observe(position, wall_ms);
@@ -58,16 +61,23 @@ public:
         auto frame = make_frame(position, station_id_, mac_, 0, wall_ms, priority_, decision->low_frequency ? &lf : nullptr);
         // 6.1.5.1: discard a construction that missed its 50 ms budget. Leave
         // the trigger unconsumed, so the next check can construct fresh data.
-        if (Clock::now() - started >= std::chrono::milliseconds(50)) return false;
+        if (Clock::now() - started >= std::chrono::milliseconds(50)) {
+            count(Telemetry::Event::construction_overrun);
+            return false;
+        }
+        expire(now);
+        if (pending_) count(Telemetry::Event::replaced);
         pending_ = GeneratedCam{++version_, position, std::move(frame), now,
             std::min(source_valid_until, now + std::chrono::milliseconds(1000)), decision->trigger, decision->low_frequency};
+        count(Telemetry::Event::generated);
         policy_.generated(*decision, now);
         return true;
     }
 
     std::optional<GeneratedCam> latest(Clock::time_point now) const {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!pending_ || now >= pending_->expires_at) return std::nullopt;
+        expire(now);
+        if (!pending_) return std::nullopt;
         return pending_;
     }
 
@@ -84,12 +94,21 @@ public:
 
     void invalidate_source() {
         std::lock_guard<std::mutex> lock(mutex_);
-        pending_.reset();
+        discard(Telemetry::Event::invalidated);
         history_.clear();
         last_observation_.reset();
     }
 
 private:
+    void count(Telemetry::Event event) const { if (telemetry_) telemetry_->count(event); }
+    void discard(Telemetry::Event reason) const {
+        if (pending_) { count(reason); pending_.reset(); }
+    }
+    void expire(Clock::time_point now) const {
+        // A remaining GN lifetime below 50 ms cannot be transmitted either.
+        if (pending_ && pending_->expires_at - now < std::chrono::milliseconds(50))
+            discard(Telemetry::Event::expired);
+    }
     void observe(const Position& position, std::uint64_t wall_ms) {
         const auto sample_time = position.sample_timestamp_ms.value_or(wall_ms);
         if (last_observation_ && sample_time > last_observation_->timestamp_ms &&
@@ -106,10 +125,11 @@ private:
     std::uint8_t priority_;
     mutable std::mutex mutex_;
     GenerationPolicy policy_;
-    std::optional<GeneratedCam> pending_;
+    mutable std::optional<GeneratedCam> pending_;
     std::optional<PathSample> last_observation_;
     std::deque<PathSample> history_;
     std::uint64_t version_ = 0;
     bool lf_transmitted_ = false;
+    Telemetry* telemetry_;
 };
 } // namespace cam

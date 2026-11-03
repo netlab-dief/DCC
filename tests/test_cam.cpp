@@ -9,6 +9,9 @@ extern "C" {
 #include <iostream>
 #include <stdexcept>
 #include <future>
+#include <cstdio>
+#include <fstream>
+#include <sstream>
 
 namespace {
 void require(bool ok, const char* message) {
@@ -86,24 +89,37 @@ void test_admission() {
     AirtimeGate gate;
     std::atomic<bool> stopping{false};
     int calls = 0;
+    cam::Telemetry telemetry;
     gate.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(gate, 1, 500, [&] { ++calls; return 900; }, stopping), "admitted CAM transmitted");
+    require(cam::Sender::transmit(gate, 1, 500, [&] { ++calls; return 900; }, stopping, {}, {}, &telemetry), "admitted CAM transmitted");
     require(calls == 1, "one send per grant");
+    require(telemetry.snapshot().confirmed == 1 && telemetry.snapshot().airtime_us == 900,
+        "admission path records only real completion and actual airtime");
     require(gate.suggested_interval_ms() == 100, "TX feedback accounted");
     require(gate.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "next packet must wait");
     stopping = true;
-    require(!cam::Sender::transmit(gate, 2, 500, [&] { ++calls; return 500; }, stopping), "shutdown cancels waiting transmission");
+    require(!cam::Sender::transmit(gate, 2, 500, [&] { ++calls; return 500; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
     require(calls == 1, "no send during shutdown");
     AirtimeGate failed;
     failed.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
     stopping = false;
     bool threw = false;
     try {
-        cam::Sender::transmit(failed, 1, 500, []() -> std::uint64_t { throw std::runtime_error("missing driver feedback"); }, stopping);
+        cam::Sender::transmit(failed, 1, 500, []() -> std::uint64_t { throw std::runtime_error("missing driver feedback"); }, stopping, {}, {}, &telemetry);
     } catch (const std::runtime_error&) { threw = true; }
     require(threw, "uncertain TX fails");
+    require(telemetry.snapshot().confirmed == 1 && telemetry.snapshot().tx_errors == 1,
+        "shutdown and failed feedback never fabricate TX confirmations");
     require(failed.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "uncertain TX keeps gate closed");
     require(failed.handle("REPORT 1 500", AirtimeGate::Clock::now()) == "DONE 1", "no fabricated completion on error");
+    AirtimeGate invalid_feedback;
+    invalid_feedback.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
+    try {
+        cam::Sender::transmit(invalid_feedback, 1, 500, [] { return 0; }, stopping, {}, {}, &telemetry);
+        require(false, "invalid airtime must fail");
+    } catch (const std::runtime_error&) {}
+    require(telemetry.snapshot().confirmed == 1 && telemetry.snapshot().tx_errors == 2,
+        "invalid PHY feedback is an error and never contributes to frequency");
     AirtimeGate source_gate;
     source_gate.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
     int fixes = 0;
@@ -386,11 +402,89 @@ void test_forced_generation() {
     require(!buffer.generate(p, start + 200ms, 100200, 1000, start + 199ms), "forced mode still requires valid source");
     require(!buffer.latest(start + 200ms), "invalid source clears forced pending CAM");
 }
+void test_cam_telemetry() {
+    using namespace std::chrono_literals;
+    cam::Telemetry telemetry;
+    cam::GenerationBuffer buffer(4316, {1, 2, 3, 4, 5, 6}, cam::default_priority, true, &telemetry);
+    const cam::GenerationBuffer::Clock::time_point start{};
+    cam::Position p;
+    require(buffer.generate(p, start, 100000, 100), "telemetry first CAM");
+    const auto old = *buffer.latest(start);
+    require(buffer.generate(p, start + 100ms, 100100, 100), "telemetry replacement CAM");
+    buffer.submitted(old.version);
+    require(buffer.latest(start + 100ms).has_value(), "older submission retains replacement");
+    require(!buffer.latest(start + 1051ms), "unrepresentable lifetime expires pending CAM");
+    require(!buffer.latest(start + 1100ms), "repeated expiry check stays empty");
+    require(buffer.generate(p, start + 1200ms, 101200, 100), "new CAM after expiry");
+    buffer.invalidate_source();
+    buffer.invalidate_source();
+    require(buffer.generate(p, start + 1300ms, 101300, 100), "CAM before successful submission");
+    const auto packet = *buffer.latest(start + 1300ms);
+    buffer.submitted(packet.version);
+    telemetry.submitted(100, 40);
+    auto data = telemetry.snapshot();
+    require(data.generated == 4 && data.replaced == 1 && data.expired == 1 && data.invalidated == 1,
+        "lifecycle counts distinguish replacement, expiry and invalidation without double counting");
+    require(data.submitted == 1 && data.confirmed == 0, "queueing does not count as TX confirmation");
+    telemetry.confirmed(25, 700);
+    buffer.transmitted(packet);
+    telemetry.count(cam::Telemetry::Event::tx_error);
+    telemetry.submitted(300, 60); // A second TX with no successful completion.
+    data = telemetry.snapshot();
+    require(data.confirmed == 1 && data.tx_errors == 1 && data.airtime_us == 700 &&
+            data.queue_ms == 400 && data.gate_ms == 100 && data.feedback_ms == 25,
+        "confirmed airtime and timing aggregates exclude missing feedback");
+
+    const auto path = "/tmp/dcc-cam-telemetry-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()) + ".csv";
+    {
+        cam::TelemetryLog log(path);
+        const auto now = cam::TelemetryLog::Clock::now() + 1s;
+        log.sample(data, now);
+        data.confirmed += 2;
+        require(std::abs(log.sample(data, now + 1s) - 2.0) < 1e-9,
+            "TX Hz uses confirmed delta and actual sampling duration");
+    }
+    {
+        cam::TelemetryLog log(path);
+        log.sample({}); // A fresh run appends its own zeroed counters.
+    }
+    std::ifstream input(path);
+    std::string line;
+    int headers = 0, rows = 0;
+    while (std::getline(input, line)) {
+        if (line.rfind("Session_Unix_ms,", 0) == 0) { ++headers; continue; }
+        ++rows;
+        std::istringstream fields(line);
+        std::vector<std::string> values;
+        while (std::getline(fields, line, ',')) values.push_back(line);
+        require(values.size() == 16, "CAM CSV has complete rows");
+        if (rows == 1) {
+            require(values[3] == "4" && values[8] == "2" && values[9] == "1" && values[10] == "1",
+                "CSV preserves lifecycle counters");
+            require(std::stod(values[12]) == 200 && std::stod(values[13]) == 50 &&
+                    std::stod(values[14]) == 25 && values[15] == "700",
+                "CSV uses submission and confirmation denominators correctly");
+        }
+    }
+    require(headers == 1 && rows == 3, "CSV append writes header once and preserves runs");
+    input.close();
+    std::remove(path.c_str());
+
+    cam::Telemetry concurrent;
+    auto writer = std::async(std::launch::async, [&] {
+        for (int i = 0; i < 2000; ++i) concurrent.count(cam::Telemetry::Event::generated);
+    });
+    for (int i = 0; i < 2000; ++i) concurrent.snapshot();
+    writer.get();
+    require(concurrent.snapshot().generated == 2000, "concurrent snapshots retain every event");
+}
 } // namespace
 int main() {
     test_position(); test_encoding(); test_admission(); test_generation_timing();
     test_generation_policy(); test_generation_buffer(); test_low_frequency_encoding();
     test_generation_during_tx_feedback();
     test_forced_generation();
+    test_cam_telemetry();
     std::cout << "CAM tests passed\n";
 }

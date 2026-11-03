@@ -41,29 +41,39 @@ void Sender::check() {
 
 bool Sender::transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimate,
     const std::function<std::uint64_t()>& send_and_wait, const std::atomic<bool>& stopping,
-    const std::function<bool()>& ready, const std::function<std::uint64_t()>& current_estimate) {
-    const auto suffix = " " + std::to_string(id);
-    while (!stopping) {
-        if (ready && !ready()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
+    const std::function<bool()>& ready, const std::function<std::uint64_t()>& current_estimate,
+    Telemetry* telemetry) {
+    try {
+        const auto suffix = " " + std::to_string(id);
+        while (!stopping) {
+            if (ready && !ready()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+            const auto reservation = current_estimate ? current_estimate() : estimate;
+            const auto reply = gate.handle("ADMIT" + suffix + " " + std::to_string(reservation), AirtimeGate::Clock::now());
+            if (reply == "GRANT" + suffix) {
+                // Once reserved, complete/report even if shutdown was requested.
+                const auto started = AirtimeGate::Clock::now();
+                const auto actual = send_and_wait();
+                const auto completed = AirtimeGate::Clock::now();
+                if (actual == 0 || actual > 1000000) throw std::runtime_error("Invalid CAM PHY airtime feedback");
+                if (gate.handle("REPORT" + suffix + " " + std::to_string(actual), AirtimeGate::Clock::now()) != "DONE" + suffix)
+                    throw std::runtime_error("CAM TX report rejected");
+                if (telemetry) telemetry->confirmed(
+                    std::chrono::duration<double, std::milli>(completed - started).count(), actual);
+                return true;
+            }
+            if (reply.rfind("WAIT" + suffix + " ", 0) != 0)
+                throw std::runtime_error("CAM admission rejected: " + reply);
+            const auto delay = std::stoull(reply.substr(reply.find_last_of(' ') + 1));
+            std::this_thread::sleep_for(std::chrono::microseconds(std::min<std::uint64_t>(delay, 10000)));
         }
-        const auto reservation = current_estimate ? current_estimate() : estimate;
-        const auto reply = gate.handle("ADMIT" + suffix + " " + std::to_string(reservation), AirtimeGate::Clock::now());
-        if (reply == "GRANT" + suffix) {
-            // Once reserved, complete/report even if shutdown was requested.
-            const auto actual = send_and_wait();
-            if (actual == 0 || actual > 1000000) throw std::runtime_error("Invalid CAM PHY airtime feedback");
-            if (gate.handle("REPORT" + suffix + " " + std::to_string(actual), AirtimeGate::Clock::now()) != "DONE" + suffix)
-                throw std::runtime_error("CAM TX report rejected");
-            return true;
-        }
-        if (reply.rfind("WAIT" + suffix + " ", 0) != 0)
-            throw std::runtime_error("CAM admission rejected: " + reply);
-        const auto delay = std::stoull(reply.substr(reply.find_last_of(' ') + 1));
-        std::this_thread::sleep_for(std::chrono::microseconds(std::min<std::uint64_t>(delay, 10000)));
+        return false;
+    } catch (...) {
+        if (telemetry) telemetry->count(Telemetry::Event::tx_error);
+        throw;
     }
-    return false;
 }
 
 #ifdef __linux__
@@ -124,7 +134,7 @@ void Sender::run() {
         config.c_cc[VMIN] = 0; config.c_cc[VTIME] = 0;
         checked(tcsetattr(serial->value, TCSANOW, &config) == 0, "GPS configuration");
     }
-    GenerationBuffer generation(options_.station_id, mac, options_.priority, options_.force_100ms);
+    GenerationBuffer generation(options_.station_id, mac, options_.priority, options_.force_100ms, &telemetry_);
     std::exception_ptr tx_failure;
     std::cout << "[CAM] " << (serial ? "GPS" : "Static") << " sender on " << interface_
               << "; priority " << static_cast<unsigned>(options_.priority) << " (" << edca_queue(options_.priority) << ")"
@@ -140,11 +150,17 @@ void Sender::run() {
                 id = std::max(id + 1, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count()));
                 std::optional<GeneratedCam> selected;
+                auto selected_since = AirtimeGate::Clock::now();
+                auto injected_at = selected_since;
                 const bool sent = transmit(gate_, id, 1, [&]() -> std::uint64_t {
                     if (!selected || !selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence))
                         throw std::runtime_error("CAM expired after admission; reservation remains closed");
+                    injected_at = AirtimeGate::Clock::now();
                     checked(sendto(radio.value, selected->frame.data(), selected->frame.size(), 0,
                         reinterpret_cast<sockaddr*>(&destination), sizeof(destination)) == static_cast<ssize_t>(selected->frame.size()), "CAM send");
+                    telemetry_.submitted(
+                        std::chrono::duration<double, std::milli>(injected_at - selected->generated_at).count(),
+                        std::chrono::duration<double, std::milli>(injected_at - selected_since).count());
                     generation.submitted(selected->version);
                     const auto notice = "TX " + std::to_string(id) + " " + std::to_string(sequence & 4095) + " " + std::to_string(selected->frame.size());
                     checked(send(feedback.value, notice.data(), notice.size(), 0) == static_cast<ssize_t>(notice.size()), "CAM feedback request");
@@ -169,7 +185,9 @@ void Sender::run() {
                     }
                     throw std::runtime_error("CAM TX completion feedback timed out; admission remains closed");
                 }, stopping_, [&] {
+                    const auto previous_version = selected ? selected->version : 0;
                     selected = generation.latest(AirtimeGate::Clock::now());
+                    if (selected && selected->version != previous_version) selected_since = AirtimeGate::Clock::now();
                     return selected && selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence);
                 }, [&] {
                     // The selected snapshot is stable for this ADMIT attempt.
@@ -177,7 +195,7 @@ void Sender::run() {
                     // 3 Mb/s OFDM 10 MHz with FCS; REPORT charges actual airtime.
                     const auto bytes = selected->frame.size();
                     return std::uint64_t(40 + 8 * ((16 + 8 * (bytes - 8 + 4) + 6 + 23) / 24));
-                });
+                }, &telemetry_);
                 if (!sent) break;
                 generation.transmitted(*selected);
             }

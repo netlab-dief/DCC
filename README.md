@@ -184,7 +184,10 @@ while radio airtime debt remains intact.
 
 The monitor updates every second. `dcc_telemetry_log.csv` is appended in the
 working directory and records controller decisions and requested radio settings,
-not measured CAM transmission frequency or hardware success. Press Ctrl+C or
+not hardware success. With CAM enabled, a separate `[CAM MONITOR]` line reports
+CAM lifecycle counters and the confirmed TX rate. `cam_telemetry_log.csv` records
+these metrics, queue/gate waits, feedback latency and actual reported airtime;
+see the [CAM telemetry guide](GUIDA_USO.md#telemetria-cam). Press Ctrl+C or
 send SIGTERM to stop; a pending CAM completion can take up to two seconds.
 
 ## Synthetic CBR and tests

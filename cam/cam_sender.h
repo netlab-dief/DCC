@@ -26,6 +26,7 @@ public:
            std::function<int()> dcc_interval = {});
     ~Sender();
     void stop();
+    TelemetrySnapshot telemetry() const { return telemetry_.snapshot(); }
     void check(); // Propagate worker errors to the application.
 
     // Callback must send once, wait for actual TX completion, then return PHY us.
@@ -33,7 +34,8 @@ public:
     static bool transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimate,
         const std::function<std::uint64_t()>& send_and_wait, const std::atomic<bool>& stopping,
         const std::function<bool()>& ready = {},
-        const std::function<std::uint64_t()>& current_estimate = {});
+        const std::function<std::uint64_t()>& current_estimate = {},
+        Telemetry* telemetry = nullptr);
 
 private:
     void run();
@@ -44,6 +46,7 @@ private:
     std::atomic<bool> stopping_{false};
     std::mutex mutex_;
     std::exception_ptr failure_;
+    Telemetry telemetry_;
     std::thread thread_;
 };
 } // namespace cam
