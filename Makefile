@@ -6,9 +6,9 @@ CXX = g++
 NL_CFLAGS := $(shell pkg-config --cflags libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -I/usr/include/libnl3)
 NL_LIBS   := $(shell pkg-config --libs libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -lnl-3 -lnl-genl-3)
 
-# -Idcc permette di trovare tutti gli header nella cartella dcc
+# Gli header ASN.1 sono inclusi anche dai sorgenti C++ del generatore CAM.
 CFLAGS = -Wall -Icam/UtilsEncode -MMD -MP
-CXXFLAGS = -Wall $(NL_CFLAGS) -std=c++17 -MMD -MP
+CXXFLAGS = -Wall -Icam/UtilsEncode $(NL_CFLAGS) -std=c++17 -MMD -MP
 LDFLAGS = -lpthread -lssl -lcrypto -lm $(NL_LIBS)
 
 # Directories
