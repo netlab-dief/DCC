@@ -44,6 +44,7 @@ public:
     float get_current_cbr() const;
     DccState get_current_state() const;
     int get_current_interval_ms() const;
+    int get_current_bitrate_mbps() const;
 
 private:
     void start_worker(bool adaptive);
@@ -70,6 +71,7 @@ private:
 
     std::atomic<DccState> current_dcc_state_;
     std::atomic<int> current_interval_ms_;
+    std::atomic<int> current_bitrate_mbps_{6};
     double current_tx_rate_ = 10.0; // Inizializzato a 10 Hz (100ms) per LIMERIC
 
     int sockfd_;

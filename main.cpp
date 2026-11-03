@@ -1,3 +1,4 @@
+#include "console_log.h"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -35,11 +36,11 @@ std::string to_string(DccState state, bool limeric_enabled) {
 int run(int argc, char* argv[]) {
     // Controllo parametri minimi obbligatori (nome_programma + interfaccia_standard + interfaccia_radiotap)
     if (argc < 3) {
-        std::cerr << "Errore: Parametri mancanti!" << std::endl;
-        std::cerr << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric] [--fake-cbr] [--cam-static | --cam-gps <device>] [--cam-station-id <id>] [--cam-feedback-port <porta>] [--cam-priority <0-7>] [--cam-force-100ms]" << std::endl;
-        std::cerr << "Esempio Reattivo: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
-        std::cerr << "Esempio LIMERIC:  sudo " << argv[0] << " wlan0 wlan1 --limeric" << std::endl;
-        std::cerr << "Esempio Test CBR: sudo " << argv[0] << " wlan0 wlan1 --fake-cbr" << std::endl;
+        ConsoleLine(std::cerr) << "Errore: Parametri mancanti!" << std::endl;
+        ConsoleLine(std::cerr) << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric] [--fake-cbr] [--cam-static | --cam-gps <device>] [--cam-station-id <id>] [--cam-priority <0-7>] [--cam-force-100ms]" << std::endl;
+        ConsoleLine(std::cerr) << "Esempio Reattivo: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
+        ConsoleLine(std::cerr) << "Esempio LIMERIC:  sudo " << argv[0] << " wlan0 wlan1 --limeric" << std::endl;
+        ConsoleLine(std::cerr) << "Esempio Test CBR: sudo " << argv[0] << " wlan0 wlan1 --fake-cbr" << std::endl;
         return 1;
     }
 
@@ -47,7 +48,7 @@ int run(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    std::cout << "[MAIN] Avvio del sistema di controllo DCC..." << std::endl;
+    ConsoleLine() << "[MAIN] Avvio del sistema di controllo DCC..." << std::endl;
 
     // Assegnazione dei parametri passati da riga di comando
     std::string interface_name = argv[1]; 
@@ -87,13 +88,8 @@ int run(int argc, char* argv[]) {
             cam_options.station_id = static_cast<std::uint32_t>(numeric_option(option, i, UINT32_MAX));
         } else if (option == "--cam-priority") {
             cam_options.priority = static_cast<std::uint8_t>(numeric_option(option, i, 7));
-        } else if (option == "--cam-feedback-port") {
-            const auto port = numeric_option(option, i, 65535);
-            if (port == 0 || port == 5555 || port == 5556)
-                throw std::invalid_argument("Porta feedback CAM non valida o riservata al DCC");
-            cam_options.feedback_port = static_cast<std::uint16_t>(port);
         } else {
-            std::cerr << "Errore: opzione sconosciuta '" << option << "'." << std::endl;
+            ConsoleLine(std::cerr) << "Errore: opzione sconosciuta '" << option << "'." << std::endl;
             return 1;
         }
     }
@@ -102,21 +98,21 @@ int run(int argc, char* argv[]) {
         throw std::invalid_argument("--cam-force-100ms richiede --cam-static o --cam-gps <device>");
 
     if (use_limeric && use_fake_cbr) {
-        std::cerr << "Errore: --fake-cbr è disponibile solo in modalità reattiva, "
+        ConsoleLine(std::cerr) << "Errore: --fake-cbr è disponibile solo in modalità reattiva, "
                   << "non insieme a --limeric." << std::endl;
         return 1;
     }
 
-    std::cout << "[MAIN] Interfaccia Rete: " << interface_name << std::endl;
-    std::cout << "[MAIN] Interfaccia Radiotap: " << interface_radiotap << std::endl;
-    std::cout << "[MAIN] Modalità Algoritmo: " << (use_limeric ? "LIMERIC (Adattativo)" : "Stati ETSI (Reattivo)") << std::endl;
-    std::cout << "[MAIN] Sorgente CBR: " << (use_fake_cbr ? "file fake_cbr_value (TEST)" : "interfaccia wireless") << std::endl;
+    ConsoleLine() << "[MAIN] Interfaccia Rete: " << interface_name << std::endl;
+    ConsoleLine() << "[MAIN] Interfaccia Radiotap: " << interface_radiotap << std::endl;
+    ConsoleLine() << "[MAIN] Modalità Algoritmo: " << (use_limeric ? "LIMERIC (Adattativo)" : "Stati ETSI (Reattivo)") << std::endl;
+    ConsoleLine() << "[MAIN] Sorgente CBR: " << (use_fake_cbr ? "file fake_cbr_value (TEST)" : "interfaccia wireless") << std::endl;
 
     // Istanziamo il manager
     DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms, use_fake_cbr);
 
     // Avviamo il thread corretto in base alla scelta dell'utente
-    std::cout << "[MAIN] Avvio del thread DCC Worker..." << std::endl;
+    ConsoleLine() << "[MAIN] Avvio del thread DCC Worker..." << std::endl;
     if (use_limeric) {
         dcc_manager.start_limeric();
     } else {
@@ -124,8 +120,8 @@ int run(int argc, char* argv[]) {
     }
     dcc_manager.start_cam(cam_options);
 
-    std::cout << "[MAIN] Sistema in esecuzione. Premi Ctrl+C per terminare." << std::endl;
-    std::cout << "--------------------------------------------------------" << std::endl;
+    ConsoleLine() << "[MAIN] Sistema in esecuzione. Premi Ctrl+C per terminare." << std::endl;
+    ConsoleLine() << "--------------------------------------------------------" << std::endl;
 
     // Il ciclo principale continua finché keep_running è true
     while (keep_running.load()) {
@@ -135,7 +131,7 @@ int run(int argc, char* argv[]) {
         DccState current_state = dcc_manager.get_current_state();
         int current_interval = dcc_manager.get_current_interval_ms();
 
-        std::cout << "[MAIN MONITOR] CBR: " << current_cbr 
+        ConsoleLine() << "[MAIN MONITOR] CBR: " << current_cbr
                   << "% | Stato: " << to_string(current_state, use_limeric) 
                   << " | T_off corrente: " << current_interval << " ms"
                   << std::endl;
@@ -145,17 +141,17 @@ int run(int argc, char* argv[]) {
     }
 
     // --- FASE DI USCITA PULITA ---
-    std::cout << "[MAIN] Arresto del thread worker DCC..." << std::endl;
+    ConsoleLine() << "[MAIN] Arresto del thread worker DCC..." << std::endl;
     dcc_manager.stop(); 
 
-    std::cout << "[MAIN] Thread fermato. Programma terminato con successo." << std::endl;
+    ConsoleLine() << "[MAIN] Thread fermato. Programma terminato con successo." << std::endl;
     return 0;
 }
 
 int main(int argc, char* argv[]) {
     try { return run(argc, argv); }
     catch (const std::exception& error) {
-        std::cerr << "[DCC ERROR] " << error.what() << std::endl;
+        ConsoleLine(std::cerr) << "[DCC ERROR] " << error.what() << std::endl;
         return 1;
     }
 }

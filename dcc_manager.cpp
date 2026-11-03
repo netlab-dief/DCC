@@ -1,3 +1,4 @@
+#include "console_log.h"
 #include "dcc_manager.h"
 
 // Funzione di utilità per mappare linearmente un valore tra due range (con clamping)
@@ -20,7 +21,7 @@ DccManager::DccManager(std::string interface, std::string interface_radiotap,
     // Inizializzazione Socket UDP per la notifica Cross-Layer
     sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd_ < 0) {
-        std::cerr << "[DCC ERROR] Impossibile creare il socket UDP per il cross-layer" << std::endl;
+        ConsoleLine(std::cerr) << "[DCC ERROR] Impossibile creare il socket UDP per il cross-layer" << std::endl;
     }
 
     std::memset(&cam_program_addr_, 0, sizeof(cam_program_addr_));
@@ -37,7 +38,7 @@ DccManager::DccManager(std::string interface, std::string interface_radiotap,
             csv_log_file_.flush();
         }
     } else {
-        std::cerr << "[DCC ERROR] Impossibile aprire il file di log CSV!" << std::endl;
+        ConsoleLine(std::cerr) << "[DCC ERROR] Impossibile aprire il file di log CSV!" << std::endl;
     }
 }
 
@@ -133,7 +134,7 @@ void DccManager::start_worker(bool adaptive) {
     struct sched_param param{};
     param.sched_priority = 70;
     if (pthread_setschedparam(dcc_thread_.native_handle(), SCHED_FIFO, &param) != 0)
-        std::cerr << "Errore nell'impostazione della priorità del thread DCC" << std::endl;
+        ConsoleLine(std::cerr) << "Errore nell'impostazione della priorità del thread DCC" << std::endl;
 }
 
 void DccManager::stop() {
@@ -144,7 +145,7 @@ void DccManager::stop() {
         try {
             if (cam_telemetry_log_) cam_telemetry_log_->sample(cam_sender_->telemetry());
         } catch (const std::exception& error) {
-            std::cerr << "[CAM TELEMETRY] " << error.what() << std::endl;
+            ConsoleLine(std::cerr) << "[CAM TELEMETRY] " << error.what() << std::endl;
         }
         cam_sender_.reset();
         cam_telemetry_log_.reset();
@@ -160,9 +161,10 @@ void DccManager::stop() {
 void DccManager::start_cam(const cam::Options& options) {
     if (!options.enabled || cam_sender_) return;
     if (!dcc_thread_.joinable()) throw std::runtime_error("Start DCC before CAM sender");
-    cam_telemetry_log_ = std::make_unique<cam::TelemetryLog>("cam_telemetry_log.csv");
+    cam_telemetry_log_ = std::make_unique<cam::TelemetryLog>("cam_telemetry_estimated_log.csv");
     cam_sender_ = std::make_unique<cam::Sender>(airtime_gate_, interface_radiotap_, options,
-        [this] { return get_current_interval_ms(); });
+        [this] { return get_current_interval_ms(); },
+        [this] { return get_current_bitrate_mbps(); });
 }
 
 void DccManager::check_cam() {
@@ -173,11 +175,11 @@ void DccManager::check_cam() {
     line << std::fixed << std::setprecision(2)
          << "[CAM MONITOR] Generati: " << data.generated << " | Sostituiti: " << data.replaced
          << " | Scaduti: " << data.expired << " | Invalidati: " << data.invalidated
-         << " | Accodati: " << data.submitted << " | TX confermate: " << data.confirmed
-         << " | TX: " << hz << " Hz | Errori TX: " << data.tx_errors
+         << " | Accodati: " << data.submitted << " | Contabilizzati (stima): " << data.accounted
+         << " | Invii al driver: " << hz << " Hz | Errori TX: " << data.tx_errors
          << " | Attesa media: " << (data.submitted ? data.queue_ms / data.submitted : 0) << " ms"
-         << " | Feedback medio: " << (data.confirmed ? data.feedback_ms / data.confirmed : 0) << " ms";
-    std::cout << line.str() << std::endl;
+         << " | Invio medio: " << (data.accounted ? data.send_ms / data.accounted : 0) << " ms";
+    ConsoleLine() << line.str() << std::endl;
     cam_sender_->check();
 }
 
@@ -236,6 +238,7 @@ void DccManager::dcc_worker_loop() {
             current_mcs = parameters.mcs_mbps;
 
             powerManager.set_tx_power(interface_, current_tx_power);
+            current_bitrate_mbps_.store(current_mcs, std::memory_order_relaxed);
             rate_manager.set_fixed_rate_netlink(current_mcs);
 
             current_dcc_state_.store(new_state, std::memory_order_relaxed);
@@ -247,7 +250,7 @@ void DccManager::dcc_worker_loop() {
                        (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
             }
 
-            std::cout << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
+            ConsoleLine() << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
                       << " | CBR: " << std::fixed << std::setprecision(2) << cbr_percent
                       << "% | T_off: " << new_interval << "ms\033[0m" << std::endl;
         }
@@ -262,7 +265,7 @@ void DccManager::limeric_worker_loop() {
     rate_manager.setup_rate_manager(interface_radiotap_);
     DccAdaptive controller;
     int last_notified_interval = -1;
-    std::cout << "[DCC INIT] ETSI adaptive DCC; airtime gate on 127.0.0.1:5556" << std::endl;
+    ConsoleLine() << "[DCC INIT] ETSI adaptive DCC; airtime gate on 127.0.0.1:5556" << std::endl;
 
     std::uint64_t cursor = 0;
     std::optional<std::int64_t> previous_slot;
@@ -292,6 +295,7 @@ void DccManager::limeric_worker_loop() {
             rate = mapped >= 24 ? 24 : (mapped >= 18 ? 18 : 12);
         }
         powerManager.set_tx_power(interface_, power);
+        current_bitrate_mbps_.store(rate, std::memory_order_relaxed);
         rate_manager.set_fixed_rate_netlink(rate);
         const bool notify = last_notified_interval < 0 || std::abs(interval - last_notified_interval) >= 5;
         if (notify) {
@@ -301,11 +305,15 @@ void DccManager::limeric_worker_loop() {
                     reinterpret_cast<sockaddr*>(&cam_program_addr_), sizeof(cam_program_addr_)) >= 0)
                     last_notified_interval = interval;
             }
-            std::cout << "[DCC ADAPTIVE] CBR: " << raw_cbr * 100.0f
+            ConsoleLine() << "[DCC ADAPTIVE] CBR: " << raw_cbr * 100.0f
                       << "% | filtered: " << controller.filtered_cbr() * 100.0
                       << "% | delta: " << controller.delta()
                       << " | advisory interval: " << interval << " ms" << std::endl;
         }
         log_telemetry("LIMERIC", raw_cbr * 100.0f, interval, power, rate, notify);
     }
+}
+
+int DccManager::get_current_bitrate_mbps() const {
+    return current_bitrate_mbps_.load(std::memory_order_relaxed);
 }

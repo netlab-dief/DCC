@@ -21,7 +21,7 @@ La seconda interfaccia passata al programma viene usata per trasmettere i CAM.
 ```bash
 sudo ./dcc wlan0 wlan1 --cam-static
 sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0
-sudo ./dcc wlan0 wlan1 --limeric --cam-static --cam-station-id 4316 --cam-feedback-port 5557
+sudo ./dcc wlan0 wlan1 --limeric --cam-static --cam-station-id 4316
 ```
 
 La MAC viene letta dall'interfaccia. La modalità statica usa 44.6292708 N,
@@ -77,42 +77,49 @@ quattro categorie richiede il supporto del driver e della radio; con meno di
 quattro code mac80211 ricade sulla coda disponibile. Il flag seleziona la
 categoria, senza modificare AIFS/CW/TXOP o il controllo di ammissione DCC.
 
-## Riscontro dal driver richiesto
+## Invio autonomo e stima dell'airtime
 
-Il codice originale usa `sendto()`, che conferma l'accodamento e non fornisce
-airtime o completamento PHY. Per mantenere il contratto del gate già presente,
-il trasmettitore integrato richiede un bridge locale verso i riscontri TX del
-driver. Questo bridge dipende dall'hardware e **non è incluso** nei sorgenti
-forniti. Il collegamento UDP implementato qui è un'interfaccia di integrazione,
-non un misuratore autonomo dell'airtime.
+È sufficiente avviare il processo `dcc`: il generatore costruisce i CAM e il
+sender li inietta sulla seconda interfaccia con `AF_PACKET/SOCK_RAW`. Non serve
+un bridge esterno e non vengono inviati datagrammi sulla porta 5557.
 
-Il bridge ascolta su UDP `127.0.0.1:5557` (o `--cam-feedback-port`). Dopo aver
-iniettato un singolo frame, il sender gli invia:
+Per ogni pacchetto il sender legge il bitrate legacy corrente del manager DCC,
+lo inserisce nel campo [radiotap RATE](https://radiotap.org/fields/Rate.html)
+e stima l'airtime della stessa versione del frame. Il bitrate del pacchetto
+resta fissato durante la sua ammissione: un aggiornamento concorrente del DCC
+vale per la selezione successiva, senza cambiare retroattivamente la stima.
 
-```text
-TX <id> <sequenza_80211> <dimensione_frame_byte>
-```
-
-La dimensione include radiotap ed esclude FCS. Il bridge deve raccogliere e
-correlare i riscontri del driver anche quando arrivano prima del datagramma TX.
-Può usare sequenza, interfaccia e MAC per individuare il frame; il canale è
-dedicato a questa istanza del sender. Deve rispondere all'indirizzo e alla porta
-sorgente del datagramma, soltanto dopo il completamento effettivo:
+La lunghezza comprende 802.11 QoS, LLC/SNAP, GeoNetworking, BTP e CAM, con tutti
+i contenitori effettivamente presenti; il modello aggiunge 4 byte FCS ed esclude
+l'header radiotap. Per OFDM considera SERVICE, TAIL, arrotondamento al numero
+intero di simboli, preambolo e SIGNAL:
 
 ```text
-DONE <stesso_id> <airtime_PHY_reale_microsecondi>
+L = lunghezza del frame senza radiotap, in byte
+R = bitrate legacy nominale del DCC/Netlink, in Mb/s
+N_DBPS = 4 × R
+T_stimato_10MHz = 40 + 8 × ceil((16 + 8 × (L + 4) + 6) / N_DBPS)  [µs]
 ```
 
-L'airtime deve essere intero, fra 1 e 1000000, e comprendere gli eventuali
-tentativi di trasmissione. Nessuna risposta positiva deve essere costruita dal
-solo tempo impiegato da `sendto()` o dalla ricezione del datagramma TX. Il sender
-attende al massimo due secondi, poi termina con errore mantenendo la riserva
-chiusa. Non ritenta la trasmissione dopo un esito incerto. Anche l'arresto può
-attendere questi due secondi per raccogliere un riscontro già pendente.
+Il DCC usa i valori nominali della tabella legacy Linux (6, 12, 18, 24 Mb/s).
+A 10 MHz il bitrate fisico della stessa modulazione/codifica è metà del valore
+nominale a 20 MHz. Il modello usa i tempi a **10 MHz** (simboli da 8 µs,
+preambolo + SIGNAL da 40 µs); su una radio a 20 MHz sovrastima l'airtime di un
+fattore due. Non rileva automaticamente la larghezza del canale. I riferimenti
+PHY sono le tabelle C.1 e C.2 di
+[ETSI EN 302 663 V1.3.1](https://www.etsi.org/deliver/etsi_en/302600_302699/302663/01.03.01_60/en_302663v010301p.pdf).
 
-Prima dell'invio viene richiesta l'ammissione al gate condiviso del DCC.
-La prenotazione usa una stima conservativa a 3 Mb/s OFDM 10 MHz, con FCS;
-l'addebito usa almeno la prenotazione e aumenta se il riscontro reale è maggiore.
+La stima riguarda un singolo invio broadcast senza ACK. Non include backoff,
+attesa nel driver o eventuali tentativi aggiuntivi non osservati; richiede che
+il driver rispetti il RATE legacy richiesto. È una stima, non una misura PHY.
+
+Prima di inviare si chiede `ADMIT` al gate condiviso. Dopo un `sendto()` completo,
+il sender invia internamente `ACCOUNT <id> <airtime_stimato_us>` allo stesso gate:
+la riserva viene chiusa e il budget viene addebitato sulla stima, senza attendere
+riscontri hardware. Il gate applica ancora intervallo minimo e budget δ.
+Un invio fallito o parziale interrompe il sender senza inventare un esito
+positivo; il gate conserva la riserva incerta. `REPORT` resta disponibile per
+client esterni che dispongano davvero di misure di completamento PHY.
 
 ## Generazione CAM per veicolo
 
@@ -122,14 +129,14 @@ La politica di generazione segue il §6.1.3 di
 disponibile si usano 100 ms. Il sender legge il valore aggiornato dal manager
 DCC sia in modalità reattiva sia adattativa e conta il tempo dall'inizio della
 generazione del CAM precedente, senza aggiungere un ulteriore intervallo
-a partire dal riscontro TX. Il thread di generazione valuta le condizioni su
-tick da 10 ms, anche durante l'attesa del gate o del riscontro TX, purché venga
+a partire dal ritorno della chiamata di invio. Il thread di generazione valuta le condizioni su
+tick da 10 ms, anche durante l'attesa del gate, purché venga
 regolarmente eseguito dal sistema.
 
 Il primo CAM è generato appena la sorgente è valida. I successivi rispettano
 sempre T_GenCam_DCC e sono generati per una delle seguenti condizioni:
 
-- Variazione rispetto all'ultimo CAM di cui è confermata la trasmissione:
+- Variazione rispetto all'ultimo CAM accodato con successo al driver:
   distanza **oltre 4 m**, direzione **oltre 4°**, oppure velocità **oltre 0,5 m/s**.
   La direzione usa la distanza angolare minima attraverso 0°/360°; i valori
   indisponibili non attivano i trigger di velocità/direzione.
@@ -206,24 +213,25 @@ storico dei fix non implementa la selezione/compressione del percorso SAE J2735.
 La configurazione corrente è un **veicolo passengerCar con ruolo ordinario**;
 non richiede il contenitore special vehicle. Il codice non rappresenta una
 certificazione dello stack o dell'hardware e non include una sorgente CAN,
-le confidenze GNSS o un driver per i riscontri TX.
+le confidenze GNSS o un misuratore hardware dell’airtime.
 Le notifiche UDP storiche sulla porta 5555 restano disponibili ai processi esterni.
 
 ## Telemetria
 
-Con CAM attivi, `[CAM MONITOR]` mostra ogni secondo nominale generati,
-sostituiti, scaduti, invalidati, accodati, TX confermate, errori e frequenza TX,
-oltre alle attese medie. `cam_telemetry_log.csv` salva questi contatori con
-identificativo di sessione, tempi medi di coda/gate/feedback e airtime reale.
-La frequenza conta esclusivamente completamenti con feedback valido e REPORT
-accettato. Il log include un campione finale dopo la chiusura del sender.
+Con CAM attivi, `[CAM MONITOR]` mostra generati, sostituiti, scaduti,
+invalidati, accodati, pacchetti contabilizzati con stima, errori e frequenza
+**degli invii accettati dal driver**. `cam_telemetry_estimated_log.csv` salva
+questi contatori, i tempi medi di coda/gate/invio e l'airtime stimato cumulativo.
+Non vengono mostrate TX confermate dal driver: `Submitted_Hz` conta l'incremento
+di `Submitted`, non ricezioni o completamenti PHY. Il file nuovo evita di
+mescolare questi dati con il precedente schema di `cam_telemetry_log.csv`.
 Vedi [colonne e definizioni](../GUIDA_USO.md#telemetria-cam).
 
 ## Verifica
 
 `make test` comprende parsing GPS, codifica/decodifica UPER, struttura dei frame,
 ammissione condivisa, soglie dei trigger, N_GenCam, ritorno a 1 Hz, contenitore
-LF e path history, modalità forzata a 100 ms, generazione durante il riscontro TX, sostituzione/scadenza
-dei CAM in attesa, addebito del riscontro e blocco dopo TX incerta. Questi test
+LF e path history, modalità forzata a 100 ms, generazione durante un invio bloccato, sostituzione/scadenza
+dei CAM in attesa, contabilizzazione della stima e blocco dopo TX incerta. Questi test
 non richiedono radio. La compilazione dell'applicazione completa e l'iniezione
 richiedono Linux e vanno verificate con il driver e la radio di destinazione.

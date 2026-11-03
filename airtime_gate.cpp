@@ -48,12 +48,12 @@ std::string AirtimeGate::handle(const std::string& request, Clock::time_point no
     catch (const std::exception&) { return "ERROR number"; }
     if (id == 0 || airtime == 0 || airtime > 1000000) return "ERROR range";
     const std::string suffix = " " + std::to_string(id);
-    if (command == "REPORT") {
+    if (command == "REPORT" || command == "ACCOUNT") {
         if (!pending_ && have_completed_ && id == completed_id_) return "DONE" + suffix;
         if (!pending_ || id != highest_id_) return "ERROR reservation";
-        // Charge at least the reservation, and compensate for underestimated TX.
-        // Starting the whole spacing at report receipt is deliberately conservative:
-        // driver queueing and delayed reports cannot cause premature reopening.
+        // Charge at least the reservation, for either measured or estimated accounting.
+        // Starting the whole spacing at accounting receipt is deliberately conservative:
+        // budget updates cannot erase the charged debt. ACCOUNT does not measure queueing.
         charged_us_ = std::max(reserved_us_, airtime);
         completed_ = now;
         completed_id_ = id;

@@ -13,7 +13,7 @@ controllore adattativo selezionato da `--limeric`. Il generatore CAM C++ è
 opzionale e si abilita con una sorgente statica oppure GPS.
 
 Per una panoramica vedi [README.md](README.md); i dettagli del generatore e del
-riscontro TX sono in [cam/README.md](cam/README.md).
+stima dell’airtime sono in [cam/README.md](cam/README.md).
 
 > Il software è pensato per Linux e modifica parametri reali delle interfacce wireless tramite `nl80211`. Per questo motivo deve normalmente essere eseguito con privilegi di amministratore.
 
@@ -26,12 +26,13 @@ riscontro TX sono in [cam/README.md](cam/README.md).
 - librerie di sviluppo `libnl-3` e `libnl-genl-3`;
 - nomi delle interfacce wireless per misura/controllo e trasmissione;
 - Python 3 per i test Python e il generatore CBR;
-- per trasmettere CAM: interfaccia monitor con iniezione radiotap e bridge del
-  driver per il completamento TX, descritto nella [guida CAM](cam/README.md#riscontro-dal-driver-richiesto).
+- per trasmettere CAM: interfaccia monitor con iniezione radiotap supportata
+  dal driver.
 
-Il bridge del driver non è incluso. Senza un riscontro valido, il sender CAM si
-ferma dopo il primo tentativo di invio ammesso e l'applicazione segnala un errore.
-I test senza radio non richiedono questo bridge.
+È sufficiente il processo `dcc`: i CAM sono iniettati direttamente e l'airtime
+è stimato dalla lunghezza completa e dal bitrate legacy corrente. Non serve un
+programma esterno per il feedback TX. La [guida CAM](cam/README.md#invio-autonomo-e-stima-dellairtime)
+descrive formula e ipotesi del modello.
 
 Su Ubuntu o Debian è possibile installare le dipendenze principali con:
 
@@ -79,11 +80,10 @@ Senza opzioni si avvia il DCC reattivo, con generazione CAM disabilitata.
 | `--cam-gps <device>` | Disattivata | CAM da GPRMC/GNRMC su seriale a 9600 baud |
 | `--cam-station-id <id>` | `4316` | Identificativo CAM tra 0 e 4294967295 |
 | `--cam-priority <0-7>` | `3` | User priority/TID del frame QoS |
-| `--cam-feedback-port <porta>` | `5557` | Porta del bridge locale: 1–65535, escluse 5555 e 5556 |
 | `--cam-force-100ms` | Disattivata | Generazione forzata ogni 100 ms nominali |
 
 `--cam-static` e `--cam-gps` sono alternativi. Il flag `--cam-force-100ms` richiede
-una delle due sorgenti CAM. ID, priorità e porta di feedback hanno effetto quando
+una delle due sorgenti CAM. ID e priorità hanno effetto quando
 una sorgente CAM è abilitata. `--fake-cbr` e `--limeric` sono incompatibili.
 
 ## Identificare le interfacce di rete
@@ -177,7 +177,7 @@ Campioni invalidi o tick mancanti interrompono la coppia di osservazioni.
 
 Non viene più ipotizzato un airtime costante di 0.5 ms. Il controllo per pacchetto
 usa il servizio di ammissione descritto sotto. L’intervallo inviato sulla porta
-5555 è solo indicativo: prima del primo feedback vale 1000 ms, poi deriva
+5555 è solo indicativo: prima della prima contabilizzazione vale 1000 ms, poi deriva
 dall’airtime contabilizzato. Il primo valore viene notificato sempre; i successivi
 quando differiscono di almeno 5 ms dall’ultimo notificato. Potenza e bitrate
 seguono ancora una politica specifica del progetto, separata dal controllo ETSI di δ.
@@ -186,8 +186,8 @@ seguono ancora una politica specifica del progetto, separata dal controllo ETSI 
 
 I sorgenti del codec e gli schemi ASN.1 sono inclusi in `cam/`; non serve il
 checkout separato di `ETSI_stack`. Il sender usa sempre la seconda interfaccia.
-Per gli esempi seguenti serve il bridge del driver descritto nella
-[guida CAM](cam/README.md#riscontro-dal-driver-richiesto).
+Gli esempi seguenti non richiedono programmi esterni; il DCC stima autonomamente
+l’airtime e contabilizza ogni invio accettato dal driver.
 
 ```bash
 # DCC reattivo e dati statici: generazione normale a 1 Hz da fermo
@@ -211,7 +211,7 @@ se il parametro non è disponibile si usano 100 ms. La politica segue il §6.1.3
 
 Il primo CAM è immediato appena la sorgente è valida. I successivi rispettano il
 minimo DCC e sono generati quando posizione, direzione o velocità differiscono
-rispetto all'ultimo CAM con TX confermata di **oltre 4 m, 4° o 0,5 m/s**, oppure
+rispetto all'ultimo CAM accodato con successo al driver di **oltre 4 m, 4° o 0,5 m/s**, oppure
 quando scade il timer T_GenCam. Il timer parte da 1000 ms; un trigger di movimento
 lo imposta al tempo effettivo dall'ultima generazione. Dopo tre CAM temporizzati
 consecutivi (N_GenCam=3) torna a 1000 ms. Un nuovo trigger di movimento azzera
@@ -228,7 +228,7 @@ con una raffica di messaggi.
 ### Dati, messaggi in attesa e priorità
 
 La generazione viene controllata ogni 10 ms nominali e continua mentre il
-trasmettitore attende il gate o il feedback. Rimane in attesa solo il CAM più
+trasmettitore attende il gate. Rimane in attesa solo il CAM più
 recente; dati non validi o scaduti svuotano lo slot. Il contenitore low frequency
 è incluso nel primo CAM e nel primo successivo alla sua scadenza di 500 ms;
 questa scadenza non provoca da sola un invio.
@@ -262,10 +262,9 @@ Durante l'esecuzione, il monitor principale stampa ogni secondo:
 - intervallo del controller (`T_off` nel monitor): minimo di stato in modalità
   reattiva, valore indicativo derivato dal gate in modalità adattativa.
 
-Con CAM attivi, una riga `[CAM MONITOR]` riporta contatori e frequenza delle TX
-confermate (vedi [Telemetria CAM](#telemetria-cam)). All'avvio il sender
-CAM stampa interfaccia, priorità/categoria EDCA, politica di generazione e porta
-richiesta per il riscontro del driver.
+Con CAM attivi, una riga `[CAM MONITOR]` riporta contatori, stime di airtime e frequenza degli invii
+accettati dal driver (vedi [Telemetria CAM](#telemetria-cam)). All'avvio il sender
+CAM stampa interfaccia, priorità/categoria EDCA, politica di generazione e uso dell’airtime stimato dal bitrate.
 
 La modalità reattiva segnala inoltre ogni cambio di stato. La modalità adattativa stampa CBR, CBR filtrato, δ e intervallo indicativo a ogni notifica significativa.
 
@@ -281,8 +280,8 @@ worker e chiude il file di telemetria. I messaggi finali del percorso normale so
 [MAIN] Thread fermato. Programma terminato con successo.
 ```
 
-Se un invio CAM è già in attesa del riscontro, la chiusura può attendere fino a
-due secondi. Un esito TX incerto non viene dichiarato completato.
+Non è prevista un'attesa di riscontro TX da un altro programma. Gli invii
+accettati dal socket vengono contabilizzati con la stima dell'airtime.
 
 ## Telemetria CSV
 
@@ -310,42 +309,38 @@ distinti, rinominare o spostare il CSV tra un'esecuzione e l'altra.
 
 ## Telemetria CAM
 
-Attivando `--cam-static` oppure `--cam-gps`, viene creato automaticamente
-`cam_telemetry_log.csv` nella directory di esecuzione. Il monitor e il CSV sono
-aggiornati ogni secondo nominale dal ciclo principale; viene salvato anche un
-campione finale dopo l'arresto del sender, inclusi i completamenti o gli errori
-arrivati durante la chiusura. Il CSV è in append: i contatori ripartono da zero
-per ogni avvio, identificato da `Session_Unix_ms`. Non servono nuovi flag.
+Con `--cam-static` oppure `--cam-gps`, il processo crea
+`cam_telemetry_estimated_log.csv` nella directory di esecuzione. Il monitor e il
+CSV sono aggiornati ogni secondo nominale, con un campione finale alla chiusura.
+I dati sono in append e i contatori ripartono da zero per ciascuna sessione,
+identificata da `Session_Unix_ms`. Il precedente `cam_telemetry_log.csv` rimane
+inalterato: il nuovo file distingue le stime dalle vecchie colonne di conferma PHY.
 
 | Colonna | Significato |
 | --- | --- |
-| `Session_Unix_ms`, `Timestamp_Unix_ms` | Avvio della sessione e istante del campione, millisecondi Unix UTC |
+| `Session_Unix_ms`, `Timestamp_Unix_ms` | Sessione e campione, millisecondi Unix UTC |
 | `Elapsed_s` | Secondi monotoni dall'apertura del log |
-| `Generated` | CAM costruiti con successo e pubblicati nello slot di attesa |
-| `Replaced` | CAM ancora validi sostituiti nello slot da un CAM più recente |
-| `Expired` | CAM rimossi dallo slot per scadenza o lifetime residua inferiore a 50 ms |
-| `Invalidated` | CAM rimossi dallo slot perché la sorgente non è più valida; non conta i tick senza fix |
-| `Construction_Overruns` | Costruzioni scartate per raggiungimento del limite di 50 ms, escluse da `Generated` |
-| `Submitted` | Frame accodati con successo dal socket radio, ancora senza garanzia di completamento PHY |
-| `TX_Confirmed` | Invii con feedback PHY valido e REPORT accettato dal gate |
-| `TX_Errors` | Operazioni di ammissione/invio/feedback fallite; un arresto durante l'attesa non è un errore |
-| `TX_Hz` | Incremento di `TX_Confirmed` diviso per i secondi monotoni effettivi dall'ultimo campione |
-| `Queue_Mean_ms` | Media cumulativa, sui frame accodati, dalla generazione all'inizio della chiamata di invio |
-| `Gate_Mean_ms` | Media cumulativa, sui frame accodati, dalla prima selezione della stessa versione al suo invio; riparte quando cambia il CAM selezionato |
-| `Feedback_Mean_ms` | Media cumulativa, sulle TX confermate, dall'ammissione al ritorno del callback che invia e attende il feedback; include preparazione, invio e attesa del bridge |
-| `PHY_Airtime_us` | Somma degli airtime reali riportati dalle TX confermate, non del debito prudenziale addebitato dal gate |
+| `Generated` | CAM costruiti con successo e pubblicati nello slot |
+| `Replaced` | CAM validi sostituiti da uno più recente |
+| `Expired` | CAM rimossi per scadenza o lifetime residua inferiore a 50 ms |
+| `Invalidated` | CAM rimossi perché la sorgente non è valida |
+| `Construction_Overruns` | Costruzioni scartate per raggiungimento del limite di 50 ms |
+| `Submitted` | Frame accettati da `sendto()`; non è una conferma PHY |
+| `Estimated_Accounted` | Invii per cui il gate ha accettato `ACCOUNT` con l'airtime stimato |
+| `TX_Errors` | Operazioni di ammissione/invio/contabilizzazione fallite; l'arresto durante l'attesa non conta come errore |
+| `Submitted_Hz` | Incremento di `Submitted` diviso per la durata monotona effettiva fra campioni |
+| `Queue_Mean_ms` | Media cumulativa, sui frame accodati, dalla generazione all'inizio dell'invio |
+| `Gate_Mean_ms` | Media cumulativa, sui frame accodati, dalla selezione della stessa versione all'invio |
+| `Send_Mean_ms` | Media del tempo di esecuzione del callback di invio, sugli invii contabilizzati |
+| `Estimated_Airtime_us` | Somma degli airtime stimati contabilizzati dal gate, in µs |
 
-I contatori sono cumulativi nella sessione; `TX_Hz` riguarda il singolo intervallo
-di campionamento. Le medie senza osservazioni valgono zero. Una TX incerta può
-incrementare `Submitted` e `TX_Errors` senza incrementare `TX_Confirmed`.
-Le conferme attestano il completamento locale segnalato dal bridge, non la ricezione
-del broadcast da parte di altri veicoli. Le attese non misurano separatamente le
-code interne del driver. I campioni concorrenti possono cogliere un CAM tra due
-passaggi del suo ciclo di vita; i contatori non costituiscono un bilancio istantaneo.
-
-Il log CAM si apre solo con CAM attivi. Un errore di apertura o di scrittura viene
-segnalato; durante la chiusura un errore di salvataggio non impedisce l'arresto dei
-worker. Il CSV DCC esistente mantiene il proprio formato.
+Il monitor mostra `Invii al driver` in Hz e `Contabilizzati (stima)`. Non vengono
+conteggiate conferme hardware o ricezioni da parte di altri veicoli. Le medie
+senza osservazioni valgono zero; i contatori sono cumulativi nella sessione,
+mentre la frequenza riguarda il solo intervallo di campionamento. `Submitted`
+può crescere prima di `Estimated_Accounted`, o senza di esso se la contabilizzazione
+fallisce. Nessun tempo misura separatamente le code interne del driver.
+Un errore del log viene segnalato; in chiusura non impedisce l'arresto dei worker.
 
 ## Notifiche per processi CAM esterni
 
@@ -452,13 +447,16 @@ Assicurarsi che:
 - il programma sia stato avviato con `--fake-cbr`;
 - non sia stata selezionata anche la modalità `--limeric`.
 
-### Il CAM viene generato ma non trasmesso
+### Il CAM viene generato ma non accodato al driver
 
-Controllare che la seconda interfaccia supporti l'iniezione, che il CBR sia
-valido e che il bridge TX sia attivo sulla porta configurata. Il flag
-`--cam-force-100ms` forza la generazione, ma non apre il gate DCC.
-`CAM TX completion feedback timed out` indica che manca il completamento reale;
-non va sostituito con un riscontro costruito dal solo accodamento.
+Controllare che la seconda interfaccia supporti l'iniezione, sia attiva e operi
+sul canale misurato, e che il CBR sia valido. `--cam-force-100ms` forza la
+generazione ma non apre il gate DCC. L'ammissione può essere ritardata dal
+budget di airtime. Il bitrate legacy deve essere supportato dal driver.
+
+Non serve alcun servizio sulla porta 5557. Se appare ancora un errore relativo
+al feedback su quella porta, si sta eseguendo una versione precedente: aggiornare
+i sorgenti e ricompilare con `make`.
 
 ### Nessun CAM in modalità GPS
 
@@ -470,8 +468,8 @@ un solo CAM al secondo.
 ### Porta del gate occupata
 
 Un secondo DCC non può occupare la stessa porta UDP 5556. Verificare le istanze
-in esecuzione. `--cam-feedback-port` cambia solo la porta del bridge TX,
-non quella del gate. Per recuperare da una TX incerta occorre prima fermare e
+in esecuzione. La porta del gate è 5556; i CAM integrati usano lo stesso gate
+senza un collegamento UDP separato. Per recuperare da un invio incerto occorre prima fermare e
 svuotare il trasmettitore e le code del driver, poi riavviare il sistema.
 
 ## Esempio completo
@@ -500,8 +498,10 @@ l’avvio termina con un errore, senza proseguire silenziosamente senza servizio
 
 Il servizio è un gate condiviso per il singolo canale controllato dal processo.
 Il trasmettitore CAM/non-CAM deve chiedere autorizzazione per **ogni** pacchetto,
-inviare una sola volta dopo GRANT e comunicare l’airtime PHY dopo il completamento
-reale della trasmissione. Una semplice chiamata a `send()` non è un riscontro TX.
+inviare una sola volta dopo GRANT e contabilizzare il pacchetto. Il CAM integrato
+usa la stima calcolata da lunghezza e bitrate con `ACCOUNT` dopo l'accodamento.
+Client con vere misure PHY possono usare `REPORT` dopo il completamento reale.
+Una semplice chiamata a `send()` non è un riscontro hardware.
 Il trasmettitore CAM integrato usa direttamente questo gate; i trasmettitori
 esterni possono usare il protocollo UDP seguente. Il servizio non può bloccare
 traffico che lo aggira né misurare autonomamente l'airtime dei pacchetti. Tutti i
@@ -513,26 +513,29 @@ Protocollo ASCII, un messaggio per datagramma:
 | --- | --- | --- |
 | `ADMIT <id> <airtime_us>` | `GRANT <id>` | Riserva un singolo pacchetto |
 | `ADMIT <id> <airtime_us>` | `WAIT <id> <microsecondi>` | Attendere e riprovare, senza trasmettere |
-| `REPORT <id> <airtime_us_reale>` | `DONE <id>` | TX completata, addebito aggiornato |
+| `ACCOUNT <id> <airtime_us_stimato>` | `DONE <id>` | Invio accodato, addebito sulla stima |
+| `REPORT <id> <airtime_us_reale>` | `DONE <id>` | Completamento PHY misurato da un client esterno |
 | richiesta non valida | `ERROR <motivo>` | Non trasmettere |
 
 Gli ID sono interi positivi a 64 bit, crescenti globalmente fra le ammissioni;
 `time.time_ns()` è il criterio usato dal client di esempio. I client concorrenti
 devono gestire `stale_id` senza inviare pacchetti. Gli airtime sono interi in
-microsecondi fra 1 e 1 000 000, inclusi overhead PHY ed eventuali ritrasmissioni.
+microsecondi fra 1 e 1 000 000. Le stime CAM includono overhead PHY e un singolo
+invio broadcast; eventuali ritrasmissioni non osservate non sono misurate.
 La stima iniziale deve essere un limite prudente della durata del pacchetto
 completo, ottenuto dalla configurazione PHY e dalla lunghezza o dal driver.
 Un REPORT più grande corregge la sottostima; uno più piccolo non restituisce credito.
 
 Una sola riserva può essere aperta sul canale. Non scade automaticamente:
-se manca il REPORT, il gate resta chiuso. ADMIT duplicati non ripetono GRANT;
-il REPORT dell’ultima riserva completata può essere ripetuto senza doppi addebiti.
+se manca ACCOUNT/REPORT, il gate resta chiuso. ADMIT duplicati non ripetono GRANT;
+la contabilizzazione dell’ultima riserva chiusa può essere ripetuta senza doppi addebiti.
 Dopo un timeout di ammissione non trasmettere: l’esito può essere incerto.
 Un riavvio richiede prima di fermare/svuotare il trasmettitore e le code del driver.
 
 La riapertura avviene dopo `max(intervallo_minimo, airtime_addebitato / δ)`,
-conteggiato dalla ricezione del REPORT. Questo pacing è volutamente prudente:
-include un margine per code del driver e ritardi nel feedback. Durante una riserva
+conteggiato dalla ricezione di ACCOUNT/REPORT. Questo pacing è volutamente prudente:
+mantiene il debito dopo la contabilizzazione. Con ACCOUNT non misura la coda
+del driver o il completamento reale. Durante una riserva
 viene mantenuto il δ più restrittivo osservato. Un aggiornamento non cancella
 il debito già accumulato. Il minimo adattativo è 25 ms; il reattivo usa l’intervallo
 del proprio stato e δ=0.03 come ulteriore tetto di occupazione. Per pacchetti grandi
@@ -552,8 +555,9 @@ with AirtimeClient() as gate:
     actual_us = gate.transmit(estimated_airtime_us, send_and_wait_for_tx_completion)
 ```
 
-Il callback del client Python dipende dal driver e dal trasmettitore esterno;
-il trasmettitore C++ integrato usa invece il protocollo di feedback in `cam/README.md`.
+Questo client Python mantiene il contratto misurato con REPORT; richiede un
+callback fornito dal trasmettitore esterno. Il CAM C++ integrato non lo usa:
+contabilizza con ACCOUNT la propria stima, senza bridge del driver.
 Il client non ritenta automaticamente dopo errori di rete o esiti TX incerti.
 
 Riferimento: [ETSI TS 102 687 V1.2.1, §5.4 e Allegato B](https://www.etsi.org/deliver/etsi_ts/102600_102699/102687/01.02.01_60/ts_102687v010201p.pdf).
@@ -602,5 +606,5 @@ make test
 La suite esegue test C++ su stati DCC, controllore adattativo, gate UDP,
 campionamento CBR e CAM, più test Python del client e del generatore CBR.
 I test CAM coprono anche il flag forzato, i trigger di movimento e N_GenCam.
-Non servono radio o bridge TX; i test UDP richiedono accesso ai socket locali.
+Non serve una radio; i test UDP richiedono accesso ai socket locali.
 La verifica con driver e radio Linux resta distinta dai test senza hardware.

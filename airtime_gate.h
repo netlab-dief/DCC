@@ -6,7 +6,8 @@
 #include <string>
 
 // One gate per radio channel, shared by every transmitting service.
-// A grant reserves one packet; REPORT is required after TX completion.
+// A grant reserves one packet. REPORT accounts measured completion; ACCOUNT
+// accounts estimated airtime after successful driver enqueue (no PHY claim).
 class AirtimeGate {
 public:
     using Clock = std::chrono::steady_clock;

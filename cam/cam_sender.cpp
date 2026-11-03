@@ -1,4 +1,6 @@
+#include "../console_log.h"
 #include "cam_sender.h"
+#include "airtime_estimator.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -22,9 +24,9 @@
 
 namespace cam {
 Sender::Sender(AirtimeGate& gate, std::string interface, Options options,
-               std::function<int()> dcc_interval)
+               std::function<int()> dcc_interval, std::function<int()> bitrate)
     : gate_(gate), interface_(std::move(interface)), options_(std::move(options)),
-      dcc_interval_(std::move(dcc_interval)),
+      dcc_interval_(std::move(dcc_interval)), bitrate_(std::move(bitrate)),
       thread_([this] {
           try { run(); }
           catch (...) { std::lock_guard<std::mutex> lock(mutex_); failure_ = std::current_exception(); }
@@ -40,7 +42,7 @@ void Sender::check() {
 }
 
 bool Sender::transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimate,
-    const std::function<std::uint64_t()>& send_and_wait, const std::atomic<bool>& stopping,
+    const std::function<void()>& send_once, const std::atomic<bool>& stopping,
     const std::function<bool()>& ready, const std::function<std::uint64_t()>& current_estimate,
     Telemetry* telemetry) {
     try {
@@ -53,15 +55,14 @@ bool Sender::transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimat
             const auto reservation = current_estimate ? current_estimate() : estimate;
             const auto reply = gate.handle("ADMIT" + suffix + " " + std::to_string(reservation), AirtimeGate::Clock::now());
             if (reply == "GRANT" + suffix) {
-                // Once reserved, complete/report even if shutdown was requested.
+                // Once reserved, enqueue/account even if shutdown was requested.
                 const auto started = AirtimeGate::Clock::now();
-                const auto actual = send_and_wait();
+                send_once();
                 const auto completed = AirtimeGate::Clock::now();
-                if (actual == 0 || actual > 1000000) throw std::runtime_error("Invalid CAM PHY airtime feedback");
-                if (gate.handle("REPORT" + suffix + " " + std::to_string(actual), AirtimeGate::Clock::now()) != "DONE" + suffix)
-                    throw std::runtime_error("CAM TX report rejected");
-                if (telemetry) telemetry->confirmed(
-                    std::chrono::duration<double, std::milli>(completed - started).count(), actual);
+                if (gate.handle("ACCOUNT" + suffix + " " + std::to_string(reservation), AirtimeGate::Clock::now()) != "DONE" + suffix)
+                    throw std::runtime_error("CAM estimated airtime accounting rejected");
+                if (telemetry) telemetry->accounted(
+                    std::chrono::duration<double, std::milli>(completed - started).count(), reservation);
                 return true;
             }
             if (reply.rfind("WAIT" + suffix + " ", 0) != 0)
@@ -89,7 +90,10 @@ struct Fd {
 };
 
 void checked(bool success, const char* operation) {
-    if (!success) throw std::runtime_error(std::string(operation) + ": " + std::strerror(errno));
+    if (!success) {
+        const int error = errno;
+        throw std::runtime_error(std::string(operation) + ": " + std::strerror(error));
+    }
 }
 } // namespace
 #endif
@@ -114,15 +118,6 @@ void Sender::run() {
     std::array<std::uint8_t, 6> mac{};
     std::memcpy(mac.data(), request.ifr_hwaddr.sa_data, mac.size());
 
-    // A driver bridge supplies real TX completion/airtime. sendto() alone only
-    // confirms queueing; it must never be reported as completed PHY transmission.
-    Fd feedback(socket(AF_INET, SOCK_DGRAM, 0));
-    sockaddr_in peer{};
-    peer.sin_family = AF_INET;
-    peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    peer.sin_port = htons(options_.feedback_port);
-    checked(connect(feedback.value, reinterpret_cast<sockaddr*>(&peer), sizeof(peer)) == 0, "CAM feedback connect");
-
     std::unique_ptr<Fd> serial;
     if (!options_.gps_device.empty()) {
         serial = std::make_unique<Fd>(open(options_.gps_device.c_str(), O_RDONLY | O_NOCTTY | O_NONBLOCK));
@@ -136,11 +131,11 @@ void Sender::run() {
     }
     GenerationBuffer generation(options_.station_id, mac, options_.priority, options_.force_100ms, &telemetry_);
     std::exception_ptr tx_failure;
-    std::cout << "[CAM] " << (serial ? "GPS" : "Static") << " sender on " << interface_
+    ConsoleLine() << "[CAM] " << (serial ? "GPS" : "Static") << " sender on " << interface_
               << "; priority " << static_cast<unsigned>(options_.priority) << " (" << edca_queue(options_.priority) << ")"
               << (options_.force_100ms ? "; generation forced every 100 ms" : "; EN 302 637-2 generation")
               << "; checks every " << GenerationPolicy::check_ms << " ms"
-              << "; requires driver TX feedback on 127.0.0.1:" << options_.feedback_port << std::endl;
+              << "; airtime estimated from DCC legacy bitrate (10 MHz model); no external bridge" << std::endl;
 
     std::thread transmitter([&] {
         try {
@@ -152,49 +147,30 @@ void Sender::run() {
                 std::optional<GeneratedCam> selected;
                 auto selected_since = AirtimeGate::Clock::now();
                 auto injected_at = selected_since;
-                const bool sent = transmit(gate_, id, 1, [&]() -> std::uint64_t {
+                const bool sent = transmit(gate_, id, 1, [&] {
                     if (!selected || !selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence))
                         throw std::runtime_error("CAM expired after admission; reservation remains closed");
                     injected_at = AirtimeGate::Clock::now();
-                    checked(sendto(radio.value, selected->frame.data(), selected->frame.size(), 0,
-                        reinterpret_cast<sockaddr*>(&destination), sizeof(destination)) == static_cast<ssize_t>(selected->frame.size()), "CAM send");
+                    const auto written = sendto(radio.value, selected->frame.data(), selected->frame.size(), 0,
+                        reinterpret_cast<sockaddr*>(&destination), sizeof(destination));
+                    checked(written >= 0, "CAM send");
+                    if (written != static_cast<ssize_t>(selected->frame.size()))
+                        throw std::runtime_error("Incomplete CAM driver enqueue");
                     telemetry_.submitted(
                         std::chrono::duration<double, std::milli>(injected_at - selected->generated_at).count(),
                         std::chrono::duration<double, std::milli>(injected_at - selected_since).count());
                     generation.submitted(selected->version);
-                    const auto notice = "TX " + std::to_string(id) + " " + std::to_string(sequence & 4095) + " " + std::to_string(selected->frame.size());
-                    checked(send(feedback.value, notice.data(), notice.size(), 0) == static_cast<ssize_t>(notice.size()), "CAM feedback request");
-                    const auto deadline = AirtimeGate::Clock::now() + std::chrono::seconds(2);
-                    while (AirtimeGate::Clock::now() < deadline) {
-                        pollfd descriptor{feedback.value, POLLIN, 0};
-                        const int ready = poll(&descriptor, 1, 10);
-                        if (ready < 0 && errno == EINTR) continue;
-                        checked(ready >= 0 && !(descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)), "CAM feedback poll");
-                        if (!(descriptor.revents & POLLIN)) continue;
-                        char buffer[256];
-                        const auto count = recv(feedback.value, buffer, sizeof(buffer), 0);
-                        checked(count > 0, "CAM feedback receive");
-                        if (static_cast<std::size_t>(count) == sizeof(buffer)) throw std::runtime_error("Oversized CAM TX feedback");
-                        std::istringstream input(std::string(buffer, count));
-                        std::string command, extra;
-                        std::uint64_t reply_id = 0, actual = 0;
-                        if (!(input >> command >> reply_id >> actual) || input >> extra || command != "DONE" || reply_id != id)
-                            throw std::runtime_error("Invalid CAM TX feedback");
-                        ++sequence;
-                        return actual;
-                    }
-                    throw std::runtime_error("CAM TX completion feedback timed out; admission remains closed");
+                    ++sequence;
                 }, stopping_, [&] {
                     const auto previous_version = selected ? selected->version : 0;
                     selected = generation.latest(AirtimeGate::Clock::now());
                     if (selected && selected->version != previous_version) selected_since = AirtimeGate::Clock::now();
-                    return selected && selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence);
+                    if (!selected) return false;
+                    set_legacy_rate(selected->frame, bitrate_ ? bitrate_() : 6);
+                    return selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence);
                 }, [&] {
-                    // The selected snapshot is stable for this ADMIT attempt.
-                    // Reserve its full size, including LF/path history, at
-                    // 3 Mb/s OFDM 10 MHz with FCS; REPORT charges actual airtime.
-                    const auto bytes = selected->frame.size();
-                    return std::uint64_t(40 + 8 * ((16 + 8 * (bytes - 8 + 4) + 6 + 23) / 24));
+                    // RATE is frozen in the selected frame for this ADMIT.
+                    return estimate_airtime_us(selected->frame, selected->frame[8] / 2);
                 }, &telemetry_);
                 if (!sent) break;
                 generation.transmitted(*selected);

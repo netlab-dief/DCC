@@ -1,3 +1,4 @@
+#include "console_log.h"
 #include "TxPowerManager.h"
 #include <iostream>
 #include <net/if.h> // Per if_nametoindex
@@ -14,12 +15,12 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     // 1. Inizializzazione del socket Netlink
     struct nl_sock *nl_sock = nl_socket_alloc();
     if (!nl_sock) {
-        std::cerr << "Errore: impossibile allocare il socket Netlink.\n";
+        ConsoleLine(std::cerr) << "Errore: impossibile allocare il socket Netlink.\n";
         return false;
     }
 
     if (genl_connect(nl_sock) < 0) {
-        std::cerr << "Errore: impossibile connettersi al socket Generic Netlink.\n";
+        ConsoleLine(std::cerr) << "Errore: impossibile connettersi al socket Generic Netlink.\n";
         nl_socket_free(nl_sock);
         return false;
     }
@@ -27,7 +28,7 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     // 2. Risoluzione dell'ID della famiglia nl80211
     int nl80211_id = genl_ctrl_resolve(nl_sock, "nl80211");
     if (nl80211_id < 0) {
-        std::cerr << "Errore: famiglia nl80211 non trovata nel kernel.\n";
+        ConsoleLine(std::cerr) << "Errore: famiglia nl80211 non trovata nel kernel.\n";
         nl_socket_free(nl_sock);
         return false;
     }
@@ -35,7 +36,7 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     // 3. Ottenimento dell'indice dell'interfaccia di rete
     unsigned int ifindex = if_nametoindex(interface_name.c_str());
     if (ifindex == 0) {
-        std::cerr << "Errore: interfaccia '" << interface_name << "' non trovata.\n";
+        ConsoleLine(std::cerr) << "Errore: interfaccia '" << interface_name << "' non trovata.\n";
         nl_socket_free(nl_sock);
         return false;
     }
@@ -43,7 +44,7 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     // 4. Creazione del messaggio di configurazione
     struct nl_msg *msg = nlmsg_alloc();
     if (!msg) {
-        std::cerr << "Errore: impossibile allocare il messaggio Netlink.\n";
+        ConsoleLine(std::cerr) << "Errore: impossibile allocare il messaggio Netlink.\n";
         nl_socket_free(nl_sock);
         return false;
     }
@@ -65,7 +66,7 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     nlmsg_free(msg); // Il messaggio può essere liberato dopo l'invio
 
     if (err < 0) {
-        std::cerr << "Errore nell'invio del messaggio Netlink.\n";
+        ConsoleLine(std::cerr) << "Errore nell'invio del messaggio Netlink.\n";
         nl_socket_free(nl_sock);
         return false;
     }
@@ -77,7 +78,7 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     nl_socket_free(nl_sock);
 
     if (err < 0) {
-        std::cerr << "Operazione fallita dal Kernel: " << nl_geterror(err) << "\n";
+        ConsoleLine(std::cerr) << "Operazione fallita dal Kernel: " << nl_geterror(err) << "\n";
         return false;
     }
 

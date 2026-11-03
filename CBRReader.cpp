@@ -1,3 +1,4 @@
+#include "console_log.h"
 #include "CBRReader.h"
 #include <stdexcept>
 #include <mutex> // Incluso per std::mutex e std::lock_guard
@@ -151,7 +152,7 @@ int cbr_handler(struct nl_msg *msg, void *arg)
     if (firstTime) {
         if (reader->m_cbr_data.verbose)
         {
-            std::cout << "First Time for CBR Computing" << std::endl;
+            ConsoleLine() << "First Time for CBR Computing" << std::endl;
         }
         reader->m_cbr_data.firstTime = false;
         reader->m_cbr_data.startActiveTime = activeTime;
@@ -167,7 +168,7 @@ int cbr_handler(struct nl_msg *msg, void *arg)
         rxTime < reader->m_cbr_data.startReceiveTime || txTime < reader->m_cbr_data.startTransmitTime) {
         if (reader->m_cbr_data.verbose)
         {
-            std::cerr << "Warning: time counters reset or wrapped. Skipping...\n";
+            ConsoleLine(std::cerr) << "Warning: time counters reset or wrapped. Skipping...\n";
         }
         reader->m_cbr_data.startActiveTime = activeTime;
         reader->m_cbr_data.startBusyTime = busyTime;
@@ -183,7 +184,7 @@ int cbr_handler(struct nl_msg *msg, void *arg)
 
     if (reader->m_cbr_data.verbose)
     {
-        std::cout << "Active-time: " << deltaActiveTime
+        ConsoleLine() << "Active-time: " << deltaActiveTime
                   << " Busy-time: " << deltaBusyTime
                   << " RX-time: " << deltaReceiveTime
                   << " TX-time: " << deltaTransmitTime << std::endl;
@@ -199,7 +200,7 @@ int cbr_handler(struct nl_msg *msg, void *arg)
     }
 
     if (reader->m_cbr_data.verbose && cbr >= 0.0f)
-        std::cout << "Current Channel Busy Ratio: " << cbr << std::endl;
+        ConsoleLine() << "Current Channel Busy Ratio: " << cbr << std::endl;
 
     // Save new base values for next delta
     reader->m_cbr_data.currentCBR = cbr;

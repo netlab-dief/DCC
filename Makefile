@@ -49,19 +49,23 @@ $(TARGET): $(C_OBJS) $(CXX_OBJS)
 
 # Clean up object files and executable
 clean:
-	rm -f $(C_OBJS) $(CXX_OBJS) $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam
+	rm -f $(C_OBJS) $(CXX_OBJS) $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log
 
 .PHONY: all clean test test-cpp test-python
 
 test: test-cpp test-python
 
-test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam
+test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log
 	./tests/test_dcc_state_machine
 	./tests/test_dcc_control
 	./tests/test_cbr_sampler
 	./tests/test_cam
+	./tests/test_console_log
 
-tests/test_cam: tests/test_cam.cpp cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h cam/cam_telemetry.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
+tests/test_console_log: tests/test_console_log.cpp console_log.h
+	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_console_log.cpp -o $@
+
+tests/test_cam: tests/test_cam.cpp cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h cam/cam_telemetry.h cam/airtime_estimator.h console_log.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. -Icam/UtilsEncode tests/test_cam.cpp cam/cam_message.cpp cam/cam_sender.cpp airtime_gate.cpp $(C_OBJS) -o $@
 
 tests/test_dcc_state_machine: tests/test_dcc_state_machine.cpp dcc_state_machine.cpp dcc_state_machine.h

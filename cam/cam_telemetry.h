@@ -11,11 +11,12 @@
 namespace cam {
 struct TelemetrySnapshot {
     std::uint64_t generated = 0, replaced = 0, expired = 0, invalidated = 0;
-    std::uint64_t construction_overruns = 0, submitted = 0, confirmed = 0, tx_errors = 0;
-    std::uint64_t airtime_us = 0;
-    double queue_ms = 0, gate_ms = 0, feedback_ms = 0;
+    std::uint64_t construction_overruns = 0, submitted = 0, accounted = 0, tx_errors = 0;
+    std::uint64_t estimated_airtime_us = 0;
+    double queue_ms = 0, gate_ms = 0, send_ms = 0;
 };
 
+// Counts driver submissions and estimated accounting, not hardware confirmations.
 // Independent of the radio backend; snapshots never hold locks during I/O.
 class Telemetry {
 public:
@@ -37,11 +38,11 @@ public:
         data_.queue_ms += queue_ms;
         data_.gate_ms += gate_ms;
     }
-    void confirmed(double feedback_ms, std::uint64_t airtime_us) {
+    void accounted(double send_ms, std::uint64_t estimated_airtime_us) {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++data_.confirmed;
-        data_.feedback_ms += feedback_ms;
-        data_.airtime_us += airtime_us;
+        ++data_.accounted;
+        data_.send_ms += send_ms;
+        data_.estimated_airtime_us += estimated_airtime_us;
     }
     TelemetrySnapshot snapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -58,24 +59,24 @@ public:
     explicit TelemetryLog(const std::string& path) : output_(path, std::ios::app) {
         if (!output_) throw std::runtime_error("Cannot open CAM telemetry: " + path);
         if (output_.tellp() == 0)
-            output_ << "Session_Unix_ms,Timestamp_Unix_ms,Elapsed_s,Generated,Replaced,Expired,Invalidated,Construction_Overruns,Submitted,TX_Confirmed,TX_Errors,TX_Hz,Queue_Mean_ms,Gate_Mean_ms,Feedback_Mean_ms,PHY_Airtime_us\n";
+            output_ << "Session_Unix_ms,Timestamp_Unix_ms,Elapsed_s,Generated,Replaced,Expired,Invalidated,Construction_Overruns,Submitted,Estimated_Accounted,TX_Errors,Submitted_Hz,Queue_Mean_ms,Gate_Mean_ms,Send_Mean_ms,Estimated_Airtime_us\n";
     }
     double sample(const TelemetrySnapshot& data, Clock::time_point now = Clock::now()) {
         const double interval = std::chrono::duration<double>(now - previous_time_).count();
-        const double hz = interval > 0 ? (data.confirmed - previous_confirmed_) / interval : 0;
+        const double hz = interval > 0 ? (data.submitted - previous_submitted_) / interval : 0;
         const auto wall = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         output_ << session_ms_ << ',' << wall << ',' << std::fixed << std::setprecision(6)
                 << std::chrono::duration<double>(now - start_).count() << ','
                 << data.generated << ',' << data.replaced << ',' << data.expired << ',' << data.invalidated << ','
-                << data.construction_overruns << ',' << data.submitted << ',' << data.confirmed << ',' << data.tx_errors << ','
+                << data.construction_overruns << ',' << data.submitted << ',' << data.accounted << ',' << data.tx_errors << ','
                 << hz << ',' << (data.submitted ? data.queue_ms / data.submitted : 0) << ','
                 << (data.submitted ? data.gate_ms / data.submitted : 0) << ','
-                << (data.confirmed ? data.feedback_ms / data.confirmed : 0) << ',' << data.airtime_us << '\n';
+                << (data.accounted ? data.send_ms / data.accounted : 0) << ',' << data.estimated_airtime_us << '\n';
         output_.flush();
         if (!output_) throw std::runtime_error("Cannot write CAM telemetry");
         previous_time_ = now;
-        previous_confirmed_ = data.confirmed;
+        previous_submitted_ = data.submitted;
         return hz;
     }
 private:
@@ -84,6 +85,6 @@ private:
         std::chrono::system_clock::now().time_since_epoch()).count();
     const Clock::time_point start_ = Clock::now();
     Clock::time_point previous_time_ = start_;
-    std::uint64_t previous_confirmed_ = 0;
+    std::uint64_t previous_submitted_ = 0;
 };
 } // namespace cam

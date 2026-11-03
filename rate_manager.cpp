@@ -1,3 +1,4 @@
+#include "console_log.h"
 #include "rate_manager.h"
 #include <iostream>
 #include <cstdlib> // Necessario per std::system
@@ -12,7 +13,7 @@ RateManager::~RateManager() {
 bool RateManager::setup_rate_manager(const std::string& interface) {
     interface_ = interface;
     is_initialized_ = true;
-    //std::cout << interface_ << " [RateManager] Inizializzazione completata." << std::endl;
+    //ConsoleLine() << interface_ << " [RateManager] Inizializzazione completata." << std::endl;
     return true;
 }
 
@@ -28,7 +29,7 @@ int RateManager::map_rate_index(int rate_idx) const {
 
 void RateManager::set_fixed_rate(int rate_idx) {
     if (!is_initialized_) {
-        std::cerr << "\033[1;31m[RateManager] Errore: Istanza non inizializzata!\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager] Errore: Istanza non inizializzata!\033[0m" << std::endl;
         return;
     }
 
@@ -44,16 +45,16 @@ void RateManager::set_fixed_rate(int rate_idx) {
     int ret = std::system(command.c_str());
 
     if (ret != 0) {
-        std::cerr << "\033[1;31m[RateManager] Errore nell'esecuzione del comando: " << command << "\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager] Errore nell'esecuzione del comando: " << command << "\033[0m" << std::endl;
     } else {
-        std::cout << "\033[1;32m[RateManager] Comando eseguito: iw dev " << interface_ 
+        ConsoleLine() << "\033[1;32m[RateManager] Comando eseguito: iw dev " << interface_
                   << " set bitrates legacy-5 " << bitrate_num << "\033[0m" << std::endl;
     }
 }
 
 void RateManager::set_fixed_rate_netlink(int rate_idx) {
     if (!is_initialized_) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Errore: Istanza non inizializzata!\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore: Istanza non inizializzata!\033[0m" << std::endl;
         return;
     }
 
@@ -62,19 +63,19 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
     // 1. Risoluzione dell'indice dell'interfaccia di rete (es. "wlan1" -> 3)
     unsigned int if_index = if_nametoindex(interface_.c_str());
     if (if_index == 0) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Interfaccia non trovata: " << interface_ << "\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Interfaccia non trovata: " << interface_ << "\033[0m" << std::endl;
         return;
     }
 
     // 2. Allocazione e connessione del socket Netlink
     struct nl_sock* socket = nl_socket_alloc();
     if (!socket) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Errore allocazione socket Netlink\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore allocazione socket Netlink\033[0m" << std::endl;
         return;
     }
 
     if (genl_connect(socket) < 0) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Connessione Generic Netlink fallita\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Connessione Generic Netlink fallita\033[0m" << std::endl;
         nl_socket_free(socket);
         return;
     }
@@ -82,7 +83,7 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
     // 3. Risoluzione dinamica dell'ID del driver 'nl80211'
     int driver_id = genl_ctrl_resolve(socket, "nl80211");
     if (driver_id < 0) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Driver nl80211 non trovato nel kernel\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Driver nl80211 non trovato nel kernel\033[0m" << std::endl;
         nl_socket_free(socket);
         return;
     }
@@ -130,7 +131,7 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
     }
 
     if (!serialization_success) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Errore di serializzazione dei parametri Netlink!\033[0m" << std::endl;
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore di serializzazione dei parametri Netlink!\033[0m" << std::endl;
         nlmsg_free(msg);
         nl_socket_free(socket);
         return;
@@ -144,10 +145,10 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
 
     // 8. Gestione del risultato ritornato dal kernel
     if (ret != 0) {
-        std::cerr << "\033[1;31m[RateManager][Netlink] Errore nell'impostare il bitrate: " 
+        ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore nell'impostare il bitrate: "
                   << nl_geterror(ret) << "\033[0m" << std::endl;
     } else {
-        std::cout << "\033[1;32m[RateManager][Netlink] Bitrate impostato: " << interface_ 
+        ConsoleLine() << "\033[1;32m[RateManager][Netlink] Bitrate impostato: " << interface_
                   << " -> legacy-5 " << bitrate_num << " Mbps\033[0m" << std::endl;
     }
 }

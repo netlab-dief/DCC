@@ -2,6 +2,7 @@
 
 #include "cam_timing.h"
 #include "cam_telemetry.h"
+#include "airtime_estimator.h"
 #include <deque>
 #include <mutex>
 
@@ -16,18 +17,20 @@ struct GeneratedCam {
 
     bool prepare_for_tx(GenerationTiming::Clock::time_point now, std::uint16_t sequence) {
         if (frame.size() < 86 || now >= expires_at) return false;
+        const auto rt = radiotap_length(frame);
+        if (frame.size() < rt + 78) return false;
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(expires_at - now).count();
         if (remaining < 50) return false; // Cannot represent a smaller positive GN lifetime.
-        frame[44] = static_cast<std::uint8_t>(std::min<std::int64_t>(20, remaining / 50) << 2);
+        frame[rt + 36] = static_cast<std::uint8_t>(std::min<std::int64_t>(20, remaining / 50) << 2);
         const auto seq = (sequence & 4095U) << 4;
-        frame[30] = seq & 255;
-        frame[31] = seq >> 8;
+        frame[rt + 22] = seq & 255;
+        frame[rt + 23] = seq >> 8;
         return true;
     }
 };
 
 // One producer and one transmitter. Pending CAMs are replaced, never queued in
-// a backlog. The generation policy continues while admission/feedback blocks.
+// a backlog. The generation policy continues while admission blocks.
 class GenerationBuffer {
 public:
     using Clock = GenerationTiming::Clock;

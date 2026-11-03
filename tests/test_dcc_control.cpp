@@ -113,11 +113,25 @@ void test_server() {
     server.start();
     server.stop();
 }
+
+void test_estimated_accounting() {
+    AirtimeGate gate;
+    const auto start = AirtimeGate::Clock::time_point{};
+    gate.configure(0.01, 25ms, start);
+    require(gate.handle("ADMIT 1 1000", start) == "GRANT 1", "reserve estimated packet");
+    require(gate.handle("ACCOUNT 1 1000", start) == "DONE 1", "estimated enqueue accounting needs no external feedback");
+    require(gate.handle("ACCOUNT 1 1000", start + 1ms) == "DONE 1", "estimated accounting retry is idempotent");
+    require(gate.handle("ADMIT 2 500", start + 99ms) == "WAIT 2 1000", "estimated debt enforced");
+    require(gate.handle("ADMIT 2 500", start + 100ms) == "GRANT 2", "gate reopens without waiting for hardware report");
+    require(gate.handle("ACCOUNT 2 500", start + 100ms) == "DONE 2", "second estimated packet accounted");
+    require(gate.handle("ACCOUNT 3 500", start + 100ms) == "ERROR reservation", "unreserved accounting rejected");
+}
 }
 
 int main() {
     test_adaptive();
     test_gate();
     test_server();
+    test_estimated_accounting();
     std::cout << "All adaptive DCC, airtime gate and UDP integration tests passed\n";
 }

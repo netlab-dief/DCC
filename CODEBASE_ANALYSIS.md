@@ -2,7 +2,7 @@
 
 This document describes the current implementation. For commands and defaults,
 see [README.md](README.md) and [GUIDA_USO.md](GUIDA_USO.md). CAM generation and
-the driver bridge are documented in [cam/README.md](cam/README.md).
+airtime estimation are documented in [cam/README.md](cam/README.md).
 
 ## Data flow
 
@@ -20,7 +20,6 @@ flowchart LR
     Gate --> TX
     External["External clients: UDP 5556"] --> Gate
     TX --> Radio["Second interface: raw radiotap injection"]
-    Bridge["Driver bridge: UDP 5557"] --> TX
     TX --> Gate
 ```
 
@@ -48,7 +47,7 @@ and controlled transmitter.
 | `cam/cam_generation.h` | Construct CAMs independently of TX; maintain pending slot, source validity, history and expiry |
 | `cam/cam_message.cpp/.h` | Parse/check RMC, encode CAM UPER, serialize radiotap/802.11/GN/BTP frames |
 | `cam/cam_telemetry.h` | Thread-safe lifecycle counters, TX timing snapshots and append-only CAM CSV with interval TX rate |
-| `cam/cam_sender.cpp/.h` | Run producer and transmitter, inject on the second interface and wait for driver feedback |
+| `cam/cam_sender.cpp/.h` | Run producer and transmitter, inject on the second interface and account bitrate-based airtime estimates |
 | `cam/UtilsEncode/` | Bundled generated ASN.1 codec and mandatory CAM construction helper |
 | `cam/Asn1_schemas/` | Bundled ASN.1 schema sources |
 | `utils.cpp/.h`, `vehicleDataDef.h` | Shared Netlink/time utilities and existing vehicle data definitions |
@@ -104,7 +103,7 @@ bitrate selection are additional project-specific policies.
 ## Generation and transmission are separate
 
 Normal CAM generation uses live DCC input clamped to 100–1000 ms, motion changes
-against the last confirmed TX, a generation timer initially at 1000 ms, and
+against the last successful driver enqueue, a generation timer initially at 1000 ms, and
 N_GenCam=3 timed follow-ups after a motion trigger. `--cam-force-100ms` selects a
 fixed 100 ms generation policy while keeping radio admission and source validity.
 The producer continues checking while the transmitter waits for admission or
@@ -122,35 +121,41 @@ Before injection, the transmitter sets the sequence number and subtracts queue
 age from the GN lifetime using 50 ms resolution. Nearly expired packets are not
 selected. These checks do not measure kernel/driver queueing time.
 
-## Admission and feedback
+## Admission and estimated airtime
 
-`ADMIT` reserves one packet, `GRANT` permits one send, and `REPORT` supplies real
-PHY airtime after completion. An admitted reservation stays open until its report;
-missing feedback does not automatically reopen the gate. Reports charge at least
-the initial reservation. During a reservation, the most restrictive observed
-delta is retained. Subsequent budget updates do not erase accumulated debt.
+`ADMIT` reserves one packet and `GRANT` permits one enqueue. The integrated CAM
+sender snapshots the manager's current legacy bitrate, inserts it in radiotap
+RATE, and calculates an OFDM airtime estimate from the same packet. The estimate
+excludes radiotap, includes the FCS and padding, and uses conservative 10 MHz
+timings with Linux's nominal legacy rate table. See `cam/README.md` for the
+formula and the 10/20 MHz interpretation.
 
-The gate waits at least `max(mode_minimum, charged_airtime / delta)` from report
-receipt; this is a conservative project policy. The advisory interval on UDP
-5555 is not a packet grant. The internal sender uses the same gate directly,
-while external producers use the UDP 5556 service.
+After successful enqueue, `ACCOUNT` charges that estimate and releases the
+reservation, without claiming PHY completion. `REPORT` remains available for
+external clients that have real completion/airtime measurements. Missing
+accounting leaves a reservation open; no automatic retry follows an uncertain
+send. The gate charges at least the reservation and retains the most restrictive
+delta observed while it was pending. It paces packets from accounting receipt
+using `max(mode_minimum, charged_airtime / delta)` and preserves outstanding debt.
 
-The integrated sender notifies a driver bridge with `TX id sequence bytes` and
-expects `DONE id actual_airtime_us`. A successful `sendto()` is not completion.
-Errors, malformed feedback or a two-second completion timeout stop the CAM worker
-and propagate to the main application. No automatic TX retry is attempted after
-an uncertain result. Driver feedback is hardware dependent and is not bundled.
+The integrated sender has no feedback UDP socket and no external bridge. The
+manager publishes the current bitrate to the sender through an atomic getter;
+reactive state changes and adaptive updates refresh it. Packet-specific RATE
+keeps the estimate stable if the manager changes bitrate before the driver send.
+The model assumes the driver honors that RATE and does not measure driver queueing,
+unknown retries, delivery or hardware completion.
 
 ## Lifecycle and validation
 
 The manager starts acquisition and control before enabling an optional CAM sender.
 Shutdown joins the CAM workers before stopping acquisition, disabling the gate,
-joining the controller and stopping the UDP service. A pending completion wait
-can take up to two seconds. Telemetry is appended to the working directory and
-records requested settings/controller decisions, not proof of hardware success.
+joining the controller and stopping the UDP service. There is no external completion wait. Controller telemetry records requested settings. CAM telemetry is appended to
+`cam_telemetry_estimated_log.csv`, counts successful driver enqueues and estimated
+accounting, and computes submission Hz. It does not claim hardware confirmation;
+the separate filename preserves previous measured-schema logs.
 
 `make test` runs reactive, adaptive/gate, CBR acquisition, CAM and Python tests.
 The CAM suite includes boundary thresholds, angle wrap, missing data, N_GenCam,
 forced mode, low-frequency encoding, pending-slot replacement, expiry and
-concurrent generation during a blocked completion callback. Linux radio tests
-are still needed to validate actual injection, queue mapping, bitrate and feedback.
+concurrent generation during a blocked send callback. Linux radio tests
+are still needed to validate actual injection, queue mapping, bitrate and the accuracy of estimated airtime.

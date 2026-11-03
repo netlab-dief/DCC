@@ -86,50 +86,46 @@ void test_encoding() {
 }
 
 void test_admission() {
+    using namespace std::chrono_literals;
     AirtimeGate gate;
     std::atomic<bool> stopping{false};
-    int calls = 0;
     cam::Telemetry telemetry;
-    gate.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(gate, 1, 500, [&] { ++calls; return 900; }, stopping, {}, {}, &telemetry), "admitted CAM transmitted");
-    require(calls == 1, "one send per grant");
-    require(telemetry.snapshot().confirmed == 1 && telemetry.snapshot().airtime_us == 900,
-        "admission path records only real completion and actual airtime");
-    require(gate.suggested_interval_ms() == 100, "TX feedback accounted");
+    int calls = 0;
+    gate.configure(0.03, 100ms, AirtimeGate::Clock::now());
+    require(cam::Sender::transmit(gate, 1, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "admitted CAM enqueued");
+    require(calls == 1 && telemetry.snapshot().accounted == 1 && telemetry.snapshot().estimated_airtime_us == 500,
+        "successful enqueue accounts reserved estimate without hardware feedback");
+    require(gate.suggested_interval_ms() == 100, "estimated airtime accounted");
     require(gate.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "next packet must wait");
     stopping = true;
-    require(!cam::Sender::transmit(gate, 2, 500, [&] { ++calls; return 500; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
-    require(calls == 1, "no send during shutdown");
+    require(!cam::Sender::transmit(gate, 2, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
+    require(calls == 1 && telemetry.snapshot().tx_errors == 0, "shutdown does not send or count an error");
     AirtimeGate failed;
-    failed.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
+    failed.configure(0.03, 100ms, AirtimeGate::Clock::now());
     stopping = false;
     bool threw = false;
     try {
-        cam::Sender::transmit(failed, 1, 500, []() -> std::uint64_t { throw std::runtime_error("missing driver feedback"); }, stopping, {}, {}, &telemetry);
+        cam::Sender::transmit(failed, 1, 500, [] { throw std::runtime_error("driver enqueue failed"); }, stopping, {}, {}, &telemetry);
     } catch (const std::runtime_error&) { threw = true; }
-    require(threw, "uncertain TX fails");
-    require(telemetry.snapshot().confirmed == 1 && telemetry.snapshot().tx_errors == 1,
-        "shutdown and failed feedback never fabricate TX confirmations");
-    require(failed.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "uncertain TX keeps gate closed");
-    require(failed.handle("REPORT 1 500", AirtimeGate::Clock::now()) == "DONE 1", "no fabricated completion on error");
-    AirtimeGate invalid_feedback;
-    invalid_feedback.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
+    require(threw && telemetry.snapshot().accounted == 1 && telemetry.snapshot().tx_errors == 1,
+        "failed enqueue is not counted as successful estimated accounting");
+    require(failed.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "uncertain enqueue leaves gate closed");
+    AirtimeGate invalid_estimate;
+    invalid_estimate.configure(0.03, 100ms, AirtimeGate::Clock::now());
     try {
-        cam::Sender::transmit(invalid_feedback, 1, 500, [] { return 0; }, stopping, {}, {}, &telemetry);
-        require(false, "invalid airtime must fail");
+        cam::Sender::transmit(invalid_estimate, 1, 0, [&] { ++calls; }, stopping, {}, {}, &telemetry);
+        require(false, "invalid estimate must fail");
     } catch (const std::runtime_error&) {}
-    require(telemetry.snapshot().confirmed == 1 && telemetry.snapshot().tx_errors == 2,
-        "invalid PHY feedback is an error and never contributes to frequency");
+    require(calls == 1 && telemetry.snapshot().tx_errors == 2, "invalid estimate rejected before driver enqueue");
     AirtimeGate source_gate;
-    source_gate.configure(0.03, std::chrono::milliseconds(100), AirtimeGate::Clock::now());
+    source_gate.configure(0.03, 100ms, AirtimeGate::Clock::now());
     int fixes = 0;
     require(cam::Sender::transmit(source_gate, 1, 500, [&] {
         require(fixes == 3, "no transmission until source is ready");
-        return 500;
     }, stopping, [&] { return ++fixes == 3; }), "source refreshed while awaiting admission");
     AirtimeGate variable_size;
-    variable_size.configure(0.03, std::chrono::milliseconds(25), AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(variable_size, 1, 1, [] { return 500; }, stopping,
+    variable_size.configure(0.03, 25ms, AirtimeGate::Clock::now());
+    require(cam::Sender::transmit(variable_size, 1, 1, [] {}, stopping,
         [] { return true; }, [] { return 2000; }), "reserve size of selected CAM including LF");
     require(variable_size.suggested_interval_ms() == 67, "reservation uses selected packet rather than stale size estimate");
 }
@@ -146,7 +142,7 @@ void test_generation_timing() {
     require(timing.ready(start, 1000), "first CAM immediately eligible");
     timing.generated(start);
     require(!timing.ready(start + 99ms, 50), "no second CAM before 100 ms");
-    require(timing.ready(start + 100ms, 50), "100 ms measured from generation, independent of delayed TX feedback");
+    require(timing.ready(start + 100ms, 50), "100 ms measured from generation, independent of delayed driver enqueue");
     require(!timing.ready(start + 199ms, 200) && timing.ready(start + 200ms, 200), "reactive DCC lower bound applied");
     require(!timing.ready(start + 399ms, 400) && timing.ready(start + 400ms, 400), "new slower DCC interval applies while waiting");
     require(!timing.ready(start + 999ms, 2000) && timing.ready(start + 1000ms, 2000), "adaptive input limited at generation layer");
@@ -246,7 +242,7 @@ void test_generation_buffer() {
     require(first.prepare_for_tx(start + 950ms, 1) && first.frame[44] == 4, "last representable 50 ms lifetime");
     require(!first.prepare_for_tx(start + 951ms, 1), "near-expired packet cannot reach driver with overstated lifetime");
     require(!buffer.generate(p, start + 100ms, 100100, 50), "stationary producer waits 1 second");
-    require(buffer.generate(p, start + 1000ms, 101000, 50), "generation continues even without TX feedback");
+    require(buffer.generate(p, start + 1000ms, 101000, 50), "generation continues even without driver submissions");
     auto latest = *buffer.latest(start + 1000ms);
     require(latest.version > first.version && latest.low_frequency, "new CAM replaces old pending CAM and preserves LF");
     buffer.submitted(first.version);
@@ -255,7 +251,7 @@ void test_generation_buffer() {
     buffer.transmitted(latest);
     require(!buffer.latest(start + 1000ms), "no backlog after submitting latest CAM");
     require(!buffer.generate(p, start + 1999ms, 101999, 50), "radio completion does not reset generation timer");
-    require(buffer.generate(p, start + 2000ms, 102000, 50), "stationary deadline preserved after delayed feedback");
+    require(buffer.generate(p, start + 2000ms, 102000, 50), "stationary deadline preserved after delayed driver enqueue");
     require(!buffer.latest(start + 3000ms), "stale queued CAM expires");
     buffer.invalidate_source();
     require(!buffer.latest(start + 2100ms), "invalid GPS clears pending CAM");
@@ -332,7 +328,7 @@ void test_low_frequency_encoding() {
     ASN_STRUCT_FREE(asn_DEF_CAM, decoded);
 }
 
-void test_generation_during_tx_feedback() {
+void test_generation_during_driver_enqueue() {
     using namespace std::chrono_literals;
     const cam::GenerationBuffer::Clock::time_point start{};
     cam::GenerationBuffer buffer(4316, {1, 2, 3, 4, 5, 6});
@@ -354,8 +350,8 @@ void test_generation_during_tx_feedback() {
         }, stopping);
         buffer.transmitted(initial);
     });
-    require(waiting_signal.wait_for(2s) == std::future_status::ready, "mock transmitter reached feedback wait");
-    require(buffer.generate(p, start + 1000ms, 101000, 100), "generate while previous packet awaits completion");
+    require(waiting_signal.wait_for(2s) == std::future_status::ready, "mock transmitter reached driver enqueue wait");
+    require(buffer.generate(p, start + 1000ms, 101000, 100), "generate while previous packet is blocked in driver enqueue");
     require(buffer.generate(p, start + 2000ms, 102000, 100), "continue generating while TX remains pending");
     auto pending = *buffer.latest(start + 2000ms);
     require(pending.version == initial.version + 2, "pending slot contains newest generation only");
@@ -363,7 +359,7 @@ void test_generation_during_tx_feedback() {
         "independent generation cannot transmit while another reservation is open");
     completed.set_value();
     tx.get();
-    require(buffer.latest(start + 2000ms)->version == pending.version, "late feedback preserves newer pending CAM");
+    require(buffer.latest(start + 2000ms)->version == pending.version, "late driver return preserves newer pending CAM");
 }
 
 void test_forced_generation() {
@@ -425,15 +421,15 @@ void test_cam_telemetry() {
     auto data = telemetry.snapshot();
     require(data.generated == 4 && data.replaced == 1 && data.expired == 1 && data.invalidated == 1,
         "lifecycle counts distinguish replacement, expiry and invalidation without double counting");
-    require(data.submitted == 1 && data.confirmed == 0, "queueing does not count as TX confirmation");
-    telemetry.confirmed(25, 700);
+    require(data.submitted == 1 && data.accounted == 0, "submission and estimated accounting remain separate counters");
+    telemetry.accounted(25, 700);
     buffer.transmitted(packet);
     telemetry.count(cam::Telemetry::Event::tx_error);
-    telemetry.submitted(300, 60); // A second TX with no successful completion.
+    telemetry.submitted(300, 60); // Another driver submission, without successful gate accounting.
     data = telemetry.snapshot();
-    require(data.confirmed == 1 && data.tx_errors == 1 && data.airtime_us == 700 &&
-            data.queue_ms == 400 && data.gate_ms == 100 && data.feedback_ms == 25,
-        "confirmed airtime and timing aggregates exclude missing feedback");
+    require(data.accounted == 1 && data.tx_errors == 1 && data.estimated_airtime_us == 700 &&
+            data.queue_ms == 400 && data.gate_ms == 100 && data.send_ms == 25,
+        "estimated airtime and send timing aggregate only completed accounting");
 
     const auto path = "/tmp/dcc-cam-telemetry-" + std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count()) + ".csv";
@@ -441,9 +437,9 @@ void test_cam_telemetry() {
         cam::TelemetryLog log(path);
         const auto now = cam::TelemetryLog::Clock::now() + 1s;
         log.sample(data, now);
-        data.confirmed += 2;
+        data.submitted += 2;
         require(std::abs(log.sample(data, now + 1s) - 2.0) < 1e-9,
-            "TX Hz uses confirmed delta and actual sampling duration");
+            "driver enqueue Hz uses submitted delta and actual sampling duration");
     }
     {
         cam::TelemetryLog log(path);
@@ -464,7 +460,7 @@ void test_cam_telemetry() {
                 "CSV preserves lifecycle counters");
             require(std::stod(values[12]) == 200 && std::stod(values[13]) == 50 &&
                     std::stod(values[14]) == 25 && values[15] == "700",
-                "CSV uses submission and confirmation denominators correctly");
+                "CSV uses submission and estimated-accounting denominators correctly");
         }
     }
     require(headers == 1 && rows == 3, "CSV append writes header once and preserves runs");
@@ -479,12 +475,70 @@ void test_cam_telemetry() {
     writer.get();
     require(concurrent.snapshot().generated == 2000, "concurrent snapshots retain every event");
 }
+
+void test_airtime_estimation() {
+    std::vector<std::uint8_t> frame(108, 0);
+    frame[2] = 8; // 100 MAC bytes, radiotap excluded, FCS added by driver.
+    const int rates[]{6, 12, 18, 24};
+    const std::uint64_t expected[]{328, 184, 136, 112};
+    for (int i = 0; i < 4; ++i) {
+        require(cam::estimate_airtime_us(frame, rates[i]) == expected[i], "OFDM estimate uses current bitrate, FCS, SERVICE, TAIL and padding");
+        require(cam::estimate_airtime_us(frame, rates[i], 20) * 2 == expected[i], "10 MHz estimate is conservative on 20 MHz radio");
+    }
+    auto rated = frame;
+    cam::set_legacy_rate(rated, 6);
+    require(rated[2] == 9 && rated[4] == 4 && rated[8] == 12, "radiotap RATE freezes selected DCC legacy bitrate");
+    require(cam::estimate_airtime_us(rated, 6) == 328, "extra radiotap RATE byte does not consume PHY airtime");
+    cam::set_legacy_rate(rated, 24);
+    require(rated.size() == 109 && rated[8] == 48 && cam::estimate_airtime_us(rated, 24) == 112, "rate changes do not grow radiotap repeatedly");
+    const std::array<std::uint8_t, 6> mac{1, 2, 3, 4, 5, 6};
+    cam::Position p;
+    cam::LowFrequencyData lf;
+    auto with_lf = cam::make_frame(p, 1, mac, 0, 0, cam::default_priority, &lf);
+    auto without_lf = cam::make_frame(p, 1, mac, 0, 0);
+    require(cam::estimate_airtime_us(with_lf, 6) >= cam::estimate_airtime_us(without_lf, 6), "estimate includes low-frequency container size");
+
+    cam::GenerationBuffer::Clock::time_point start{};
+    cam::GenerationBuffer buffer(1, mac);
+    buffer.generate(p, start, 100000, 100);
+    auto packet = *buffer.latest(start);
+    cam::set_legacy_rate(packet.frame, 12);
+    require(packet.prepare_for_tx(start, 7) && packet.frame[31] == 0x70 && packet.frame[45] == 0x50 && packet.frame[33] == 3,
+        "sequence, lifetime and priority offsets account for inserted RATE field");
+
+    for (int rate : {0, -1, 3, 7, 1000}) {
+        bool rejected = false;
+        try { cam::estimate_airtime_us(frame, rate); } catch (const std::invalid_argument&) { rejected = true; }
+        require(rejected, "unsupported legacy rate rejected");
+    }
+    auto malformed = frame; malformed[2] = 0xff;
+    bool rejected = false;
+    try { cam::estimate_airtime_us(malformed, 6); } catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "invalid radiotap length rejected");
+
+    AirtimeGate gate;
+    cam::Telemetry telemetry;
+    std::atomic<bool> stopping{false};
+    int sends = 0;
+    for (int i = 0; i < 4; ++i) {
+        gate.configure(0.03, std::chrono::milliseconds(25), AirtimeGate::Clock::now());
+        auto selected = frame;
+        cam::set_legacy_rate(selected, rates[i]);
+        require(cam::Sender::transmit(gate, i + 1, 1, [&] { ++sends; telemetry.submitted(0, 0); }, stopping,
+            [] { return true; }, [&] { return cam::estimate_airtime_us(selected, selected[8] / 2); }, &telemetry),
+            "multiple CAMs enqueue with changing bitrates and no feedback service");
+    }
+    require(sends == 4 && telemetry.snapshot().submitted == 4 && telemetry.snapshot().accounted == 4 &&
+        telemetry.snapshot().estimated_airtime_us == 760 && telemetry.snapshot().tx_errors == 0,
+        "all packets accounted from their own bitrate estimates without fabricated confirmations");
+}
 } // namespace
 int main() {
     test_position(); test_encoding(); test_admission(); test_generation_timing();
     test_generation_policy(); test_generation_buffer(); test_low_frequency_encoding();
-    test_generation_during_tx_feedback();
+    test_generation_during_driver_enqueue();
     test_forced_generation();
     test_cam_telemetry();
+    test_airtime_estimation();
     std::cout << "CAM tests passed\n";
 }

@@ -16,23 +16,22 @@ struct Options {
     bool force_100ms = false; // Force generation only; radio admission still applies.
     std::string gps_device; // Empty: use static position.
     std::uint32_t station_id = 4316;
-    std::uint16_t feedback_port = 5557;
     std::uint8_t priority = default_priority; // CAM TC2 -> UP3 -> AC_BE.
 };
 
 class Sender {
 public:
     Sender(AirtimeGate& gate, std::string interface, Options options,
-           std::function<int()> dcc_interval = {});
+           std::function<int()> dcc_interval = {}, std::function<int()> bitrate = {});
     ~Sender();
     void stop();
     TelemetrySnapshot telemetry() const { return telemetry_.snapshot(); }
     void check(); // Propagate worker errors to the application.
 
-    // Callback must send once, wait for actual TX completion, then return PHY us.
+    // Callback enqueues once. ACCOUNT charges the reserved bitrate-based estimate.
     // Exceptions deliberately leave any outstanding reservation closed.
     static bool transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimate,
-        const std::function<std::uint64_t()>& send_and_wait, const std::atomic<bool>& stopping,
+        const std::function<void()>& send_once, const std::atomic<bool>& stopping,
         const std::function<bool()>& ready = {},
         const std::function<std::uint64_t()>& current_estimate = {},
         Telemetry* telemetry = nullptr);
@@ -43,6 +42,7 @@ private:
     std::string interface_;
     Options options_;
     std::function<int()> dcc_interval_;
+    std::function<int()> bitrate_;
     std::atomic<bool> stopping_{false};
     std::mutex mutex_;
     std::exception_ptr failure_;
