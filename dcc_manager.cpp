@@ -137,12 +137,27 @@ void DccManager::start_worker(bool adaptive) {
 }
 
 void DccManager::stop() {
+    if (cam_sender_) {
+        cam_sender_->stop();
+        cam_sender_.reset();
+    }
     stop_dcc_thread_ = true;
     airtime_gate_.disable();
     cbr_sampler_.stop(); // Also wakes a controller waiting for a sample.
     if (dcc_thread_.joinable()) dcc_thread_.join();
     airtime_gate_.disable();
     gate_server_.stop();
+}
+
+void DccManager::start_cam(const cam::Options& options) {
+    if (!options.enabled || cam_sender_) return;
+    if (!dcc_thread_.joinable()) throw std::runtime_error("Start DCC before CAM sender");
+    cam_sender_ = std::make_unique<cam::Sender>(airtime_gate_, interface_radiotap_, options,
+        [this] { return get_current_interval_ms(); });
+}
+
+void DccManager::check_cam() {
+    if (cam_sender_) cam_sender_->check();
 }
 
 float DccManager::get_current_cbr() const {

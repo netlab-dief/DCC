@@ -7,12 +7,12 @@ NL_CFLAGS := $(shell pkg-config --cflags libnl-3.0 libnl-genl-3.0 2>/dev/null ||
 NL_LIBS   := $(shell pkg-config --libs libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -lnl-3 -lnl-genl-3)
 
 # -Idcc permette di trovare tutti gli header nella cartella dcc
-CFLAGS = -c -Wall -IUtilsEncode
-CXXFLAGS = -c -Wall -IUtilsEncode $(NL_CFLAGS) -std=c++17
+CFLAGS = -Wall -Icam/UtilsEncode -MMD -MP
+CXXFLAGS = -Wall $(NL_CFLAGS) -std=c++17 -MMD -MP
 LDFLAGS = -lpthread -lssl -lcrypto -lm $(NL_LIBS)
 
 # Directories
-C_DIR = UtilsEncode
+C_DIR = cam/UtilsEncode
 CXX_DIR = .
 OUTPUT_DIR = .
 
@@ -20,7 +20,7 @@ OUTPUT_DIR = .
 C_SOURCES := $(wildcard $(C_DIR)/*.c)
 
 # C++ source files (AGGIUNTO dcc/utils.cpp alla lista)
-CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp gate_server.cpp cbr_sampler.cpp
+CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp gate_server.cpp cbr_sampler.cpp cam/cam_message.cpp cam/cam_sender.cpp
 
 # Object files
 C_OBJS := $(patsubst $(C_DIR)/%.c, $(C_DIR)/%.o, $(C_SOURCES))
@@ -28,6 +28,9 @@ CXX_OBJS := $(patsubst %.cpp, %.o, $(CXX_SOURCES))
 
 # Output binary in the main folder
 TARGET = dcc
+
+.DEFAULT_GOAL := all
+-include $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d)
 
 # Default rule
 all: $(TARGET)
@@ -46,16 +49,20 @@ $(TARGET): $(C_OBJS) $(CXX_OBJS)
 
 # Clean up object files and executable
 clean:
-	rm -f $(C_OBJS) $(CXX_OBJS) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler
+	rm -f $(C_OBJS) $(CXX_OBJS) $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam
 
 .PHONY: all clean test test-cpp test-python
 
 test: test-cpp test-python
 
-test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler
+test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam
 	./tests/test_dcc_state_machine
 	./tests/test_dcc_control
 	./tests/test_cbr_sampler
+	./tests/test_cam
+
+tests/test_cam: tests/test_cam.cpp cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
+	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. -Icam/UtilsEncode tests/test_cam.cpp cam/cam_message.cpp cam/cam_sender.cpp airtime_gate.cpp $(C_OBJS) -o $@
 
 tests/test_dcc_state_machine: tests/test_dcc_state_machine.cpp dcc_state_machine.cpp dcc_state_machine.h
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -I. tests/test_dcc_state_machine.cpp dcc_state_machine.cpp -o $@

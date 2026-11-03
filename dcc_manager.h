@@ -26,6 +26,8 @@
 #include "dcc_adaptive.h"
 #include "gate_server.h"
 #include "cbr_sampler.h"
+#include "cam/cam_sender.h"
+#include <memory>
 
 class DccManager {
 public:
@@ -36,6 +38,8 @@ public:
     void start();
     void start_limeric();
     void stop();
+    void start_cam(const cam::Options& options);
+    void check_cam();
 
     float get_current_cbr() const;
     DccState get_current_state() const;
@@ -78,6 +82,7 @@ private:
 
     AirtimeGate airtime_gate_;
     GateServer gate_server_{airtime_gate_};
+    std::unique_ptr<cam::Sender> cam_sender_;
 
     // Stream del file di log CSV
     std::ofstream csv_log_file_;

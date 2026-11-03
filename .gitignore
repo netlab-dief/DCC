@@ -1,4 +1,5 @@
 *.o
+*.d
 dcc
 dcc_telemetry_log.csv
 cbr_trace_log.csv
@@ -10,3 +11,4 @@ tests/test_dcc_state_machine
 tests/test_dcc_control
 
 tests/test_cbr_sampler
+tests/test_cam

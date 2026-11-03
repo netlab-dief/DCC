@@ -1,306 +1,224 @@
-# DCC - Distributed Congestion Control
+# DCC — Distributed Congestion Control
 
-A C++ implementation of a Distributed Congestion Control (DCC) system for vehicular wireless networks. This project monitors channel congestion and dynamically adjusts transmission parameters to optimize network performance.
+C++17 congestion control for Linux ITS-G5 experiments, with an integrated C++ CAM
+generator. DCC reads Channel Busy Ratio (CBR), requests radio power and bitrate
+changes, and controls packet admission through a shared airtime gate.
 
-## Overview
+- [Guida d'uso in italiano](GUIDA_USO.md): setup, options, telemetry and gate protocol.
+- [CAM guide](cam/README.md): generation, forced 100 ms mode, EDCA and driver feedback.
+- [Architecture](CODEBASE_ANALYSIS.md): modules, threads and failure handling.
 
-DCC is a congestion management system that monitors the channel busy ratio (CBR) and adjusts transmission rates and power levels to maintain optimal network conditions. The system operates on wireless interfaces and uses real-time monitoring to implement adaptive congestion control.
+## Requirements and build
 
-## Features
-
-- **Real-time Channel Monitoring**: Continuously monitors Channel Busy Ratio (CBR) using Netlink-based Radiotap interfaces
-- **5-State Congestion Machine**: Dynamic transitions between RELAXED, ACTIVE_1, ACTIVE_2, ACTIVE_3, and RESTRICTIVE states based on CBR thresholds
-- **Adaptive Transmission Power Control**: Scales TX power from 23 dBm (relaxed) to 10 dBm (restrictive) for optimal channel efficiency
-- **Intelligent Rate Adaptation**: Adjusts data rates (6-24 Mbps) and transmission intervals (50ms-1s) based on network congestion
-- **Real-time Scheduling**: Operates with SCHED_FIFO priority 70 for deterministic, low-latency congestion control
-- **Cross-Layer IPC**: Sends UDP notifications to CAM process (127.0.0.1:5555) for inter-process communication
-- **Thread-safe Operations**: Employs atomic operations, mutex protection, and POSIX synchronization primitives
-- **Graceful Shutdown**: Clean SIGINT handler with proper resource cleanup
-- **Comprehensive Logging**: Detailed state transitions, CBR readings, and adjustment notifications
-
-## Project Structure
-
-```
-├── main.cpp                 # Main entry point and signal handling
-├── dcc_manager.cpp/.h       # Core DCC management logic
-├── CBRReader.cpp/.h         # Channel Busy Ratio reader (Netlink-based)
-├── TxPowerManager.cpp/.h    # Transmission power management
-├── rate_manager.cpp/.h      # Rate adaptation management
-├── utils.cpp/.h             # Utility functions
-├── vehicleDataDef.h         # Vehicle data structure definitions
-├── Makefile                 # Build configuration
-└── UtilsEncode/             # Additional utilities and encoding support
-```
-
-## Prerequisites
-
-- **C++17** or later
-- **Linux kernel** with wireless extensions support
-- **libnl-3.0** and **libnl-genl-3.0** (for Netlink communication)
-- **OpenSSL** development libraries
-- **GCC/G++** compiler
-- **POSIX threads** support
-
-### Installation of Dependencies
+The full application requires Linux, GCC/G++ with C++17, GNU Make, pkg-config,
+OpenSSL and libnl development libraries. Python 3 is required for Python tests
+and the synthetic CBR generator.
 
 On Ubuntu/Debian:
-```bash
-sudo apt-get install libssl-dev libnl-3-dev libnl-genl-3-dev build-essential
-```
-
-On Fedora/RHEL:
-```bash
-sudo dnf install openssl-devel libnl3-devel gcc-c++
-```
-
-## Building
-
-The project uses a Makefile for compilation. Build the project with:
 
 ```bash
+sudo apt update
+sudo apt install build-essential pkg-config libssl-dev libnl-3-dev libnl-genl-3-dev iw python3
 make
 ```
 
-To clean build artifacts:
+The executable is `./dcc`. To rebuild from scratch:
+
 ```bash
 make clean
+make
 ```
 
-To rebuild from scratch:
+Some hardware-independent tests run on macOS; full application compilation and
+radio transmission require Linux.
+
+## Interfaces
+
 ```bash
-make rebuild
+iw dev
+sudo ./dcc <network_interface> <radiotap_interface> [options]
 ```
 
-## Tests
+| Argument | Used for |
+| --- | --- |
+| First interface, e.g. `wlan0` | CBR survey readings and TX power configuration |
+| Second interface, e.g. `wlan1` | Bitrate configuration and all integrated CAM transmissions |
 
-Run the C++ state-machine tests and the Python generator tests with:
+With CAM enabled, the second interface must already support monitor/radiotap
+injection. The application does not create or configure monitor mode or the
+channel. The measured channel and controlled radio must correspond to the CAM
+transmitter; passing two unrelated radios does not establish that relationship.
+Radio operations normally require administrator privileges and driver support.
+
+## Examples
+
+DCC only, reactive mode:
+
+```bash
+sudo ./dcc wlan0 wlan1
+```
+
+Adaptive mode, selected by the historical `--limeric` option:
+
+```bash
+sudo ./dcc wlan0 wlan1 --limeric
+```
+
+Integrated CAM sender, using static sample data or a GPS serial device:
+
+```bash
+sudo ./dcc wlan0 wlan1 --cam-static
+sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0
+```
+
+**CAM transmission requires a driver feedback bridge**, listening by default on
+`127.0.0.1:5557`. The bridge is hardware dependent and is not included. Without
+valid completion feedback, the sender stops after its first admitted transmission
+attempt and the application reports an error. A successful raw socket send only
+confirms queueing. See the [feedback protocol](cam/README.md#riscontro-dal-driver-richiesto)
+before running either CAM example.
+
+Force CAM generation every 100 ms, including when stationary:
+
+```bash
+sudo ./dcc wlan0 wlan1 --cam-static --cam-force-100ms
+sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0 --cam-force-100ms --cam-priority 3
+```
+
+This forces **generation at a nominal 10 Hz**. Radio admission, valid source data
+and TX feedback are still required, so the actual transmission rate can be lower.
+The newest CAM replaces an older pending one; there is no catch-up burst.
+
+## Command-line options
+
+Both positional interface arguments are always required. Reactive DCC with CAM
+disabled is the default.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--limeric` | Off | Select the adaptive delta controller |
+| `--fake-cbr` | Off | Read `fake_cbr_value` in reactive mode; incompatible with `--limeric` |
+| `--cam-static` | Off | Enable CAMs with the bundled stationary sample position |
+| `--cam-gps <device>` | Off | Enable CAMs from GPRMC/GNRMC over serial at 9600 baud |
+| `--cam-station-id <id>` | `4316` | Set CAM station ID, unsigned 32-bit integer |
+| `--cam-priority <0-7>` | `3` | Set the injected frame's QoS TID / user priority |
+| `--cam-feedback-port <port>` | `5557` | Set the local driver bridge port; 1–65535 except 5555 and 5556 |
+| `--cam-force-100ms` | Off | Force generation every 100 ms; requires `--cam-static` or `--cam-gps` |
+
+Choose one CAM source: `--cam-static` and `--cam-gps` are mutually exclusive.
+Station ID, priority and feedback-port settings take effect when a CAM source is
+enabled. Unknown options and invalid values are rejected.
+
+## CAM generation and EDCA
+
+Normal generation implements the vehicle timing rules of
+[ETSI EN 302 637-2 V1.4.1, §6.1.3](https://www.etsi.org/deliver/etsi_en/302600_302699/30263702/01.04.01_60/en_30263702v010401p.pdf):
+
+- First CAM as soon as valid source data are available; stationary generation at 1 Hz.
+- Motion triggers for changes exceeding 4 m, 4 degrees or 0.5 m/s relative to the last confirmed transmission.
+- `T_GenCam_DCC` clamped to 100–1000 ms; movement retains the elapsed generation interval for three timed follow-ups, then the timer returns to 1000 ms.
+- Generation checks every nominal 10 ms, independently of radio admission and feedback.
+- Low-frequency container in the first CAM and the first CAM after its 500 ms deadline.
+
+`--cam-force-100ms` overrides the generation triggers and DCC generation interval.
+Without it, normal timing remains active. Neither mode guarantees radio delivery
+at the generation rate.
+
+CAMs use **GeoNetworking TC2 and QoS TID 3 → AC_BE** by default. The mapping is
+specified in [ETSI TS 102 636-4-2 V1.4.1, table 4](https://www.etsi.org/deliver/etsi_ts/102600_102699/1026360402/01.04.01_60/ts_1026360402v010401p.pdf).
+The optional priority flag overrides the QoS TID while keeping the CAM's TC2:
+
+| QoS TID / user priority | EDCA category |
+| --- | --- |
+| 0, 3 | AC_BE |
+| 1, 2 | AC_BK |
+| 4, 5 | AC_VI |
+| 6, 7 | AC_VO |
+
+Actual queue selection depends on the driver and radio. EDCA packet priority is
+separate from the DCC worker's attempted `SCHED_FIFO` scheduling priority of 70.
+
+## DCC control
+
+CBR is acquired on nominal UTC-aligned 100 ms ticks in its own thread. The reader
+uses `NL80211_CMD_GET_SURVEY` on the first interface and computes the ratio of
+busy-time increments to active-time increments. The first reading establishes a
+baseline. Missing, invalid or stale observations interrupt controller continuity
+and close admission. The monitor prints CBR as a percentage; internal values and
+synthetic input use fractions from 0 to 1.
+
+### Reactive mode
+
+The following are the project's configured radio parameters. The CBR ranges
+initialize the state; later transitions move one adjacent state at a time after
+1 second above the upper threshold or 5 seconds below the lower threshold.
+
+| State | CBR range | TX power | Requested bitrate | Gate minimum | CAM generation lower bound, normal mode |
+| --- | --- | --- | --- | --- | --- |
+| RELAXED | <30% | 23 dBm | 6 Mb/s | 50 ms | 100 ms |
+| ACTIVE_1 | 30–<40% | 19 dBm | 12 Mb/s | 100 ms | 100 ms |
+| ACTIVE_2 | 40–<50% | 16 dBm | 18 Mb/s | 200 ms | 200 ms |
+| ACTIVE_3 | 50–<65% | 13 dBm | 24 Mb/s | 400 ms | 400 ms |
+| RESTRICTIVE | ≥65% | 10 dBm | 24 Mb/s | 1000 ms | 1000 ms |
+
+These are lower bounds, not fixed CAM periods. Airtime debt can delay admission
+further, and a stationary CAM source normally generates at 1 Hz in every state.
+
+### Adaptive mode
+
+`--limeric` selects the delta controller in
+[ETSI TS 102 687 V1.2.1, §5.4](https://www.etsi.org/deliver/etsi_ts/102600_102699/102687/01.02.01_60/ts_102687v010201p.pdf),
+using consecutive 100 ms samples and UTC-aligned 200 ms updates. The gate uses
+the delta budget and a 25 ms minimum. The project-specific power/bitrate policy
+is separate from the delta algorithm. The interval exposed by the controller is
+advisory and may exceed 1000 ms; the normal CAM generation input is clamped,
+while radio airtime debt remains intact.
+
+## Local ports and telemetry
+
+| Endpoint | Purpose |
+| --- | --- |
+| UDP `127.0.0.1:5555` | Outgoing advisory notifications: native `int32_t` state in reactive mode, interval in ms in adaptive mode |
+| UDP `127.0.0.1:5556` | Shared `ADMIT` / `REPORT` gate for external transmitters; integrated CAMs call the same gate directly |
+| UDP `127.0.0.1:5557` | Driver feedback bridge used by integrated CAMs; configurable |
+
+The monitor updates every second. `dcc_telemetry_log.csv` is appended in the
+working directory and records controller decisions and requested radio settings,
+not measured CAM transmission frequency or hardware success. Press Ctrl+C or
+send SIGTERM to stop; a pending CAM completion can take up to two seconds.
+
+## Synthetic CBR and tests
+
+In one terminal:
+
+```bash
+python3 cbr_generator.py --output fake_cbr_value
+```
+
+In another, from the same working directory:
+
+```bash
+sudo ./dcc wlan0 wlan1 --fake-cbr
+```
+
+The script defaults to output file `cbr`, so `--output fake_cbr_value` matters.
+This mode substitutes CBR readings only; radio configuration and any enabled CAM
+transmissions still use the real interfaces.
 
 ```bash
 make test
 ```
 
-The same build and test commands run automatically on every push and pull request
-through GitHub Actions.
+Tests cover reactive transitions, adaptive reference values, CBR acquisition,
+airtime accounting and UDP exchanges, CAM parsing/encoding, motion and timing
+triggers, forced 100 ms generation, pending-message replacement and TX feedback
+failures. They do not require a radio; UDP tests require local socket access.
+GitHub Actions builds and tests on Ubuntu. Passing tests does not replace a
+Linux driver/radio integration test.
 
-## Usage
-
-Run the DCC system with two wireless interfaces:
-
-```bash
-sudo ./dcc <standard_interface> <radiotap_interface>
-```
-
-### Example
-
-```bash
-sudo ./dcc wlan0 wlan1
-```
-
-Where:
-- `wlan0` is the standard network interface for normal wireless operations
-- `wlan1` is the Radiotap interface for advanced packet monitoring
-
-### Stopping the Application
-
-Press **Ctrl+C** to gracefully shut down the system:
-
-```
-^C
-[MAIN] Ricevuto Ctrl+C (SIGINT). Avvio chiusura pulita...
-```
-
-## DCC States
-
-The system operates in five different states based on channel congestion:
-
-| State | CBR Range | TX Power | TX Rate | TX Interval | Max Frequency |
-|-------|-----------|----------|---------|-------------|---------------|
-| **RELAXED** | < 30% | 23 dBm | 12 Mbps | 50 ms | 20 Hz |
-| **ACTIVE_1** | 30-40% | 19 dBm | 12 Mbps | 100 ms | 10 Hz |
-| **ACTIVE_2** | 40-50% | 16 dBm | 18 Mbps | 200 ms | 5 Hz |
-| **ACTIVE_3** | 50-65% | 13 dBm | 24 Mbps | 400 ms | 2.5 Hz |
-| **RESTRICTIVE** | ≥ 65% | 10 dBm | 24 Mbps | 1000 ms | 1 Hz |
-
-## Module Descriptions
-
-### DCC Manager (`dcc_manager.h/cpp`)
-Core congestion control engine running as a real-time thread:
-- Runs with SCHED_FIFO scheduling at priority 70 for deterministic behavior
-- Polls every 100ms for CBR updates from the kernel
-- Implements 5-state machine with automatic state transitions
-- Requires 1 second of continuously high CBR before moving to a more restrictive
-  state and 5 seconds of continuously low CBR before moving to a less restrictive
-  state
-- Triggers synchronized power and rate adjustments
-- Sends UDP notifications (127.0.0.1:5555) for inter-process communication
-- Manages monitoring thread lifecycle and graceful shutdown
-Netlink-based channel monitoring system:
-- Queries kernel via `NL80211_CMD_GET_SURVEY` command
-- Calculates Channel Busy Ratio = (busy_time / total_time) from wireless survey data
-- Integrates directly with Linux wireless extensions (nl80211)
-- Thread-safe with mutex protection for concurrent access
-- Provides real-time channel state information to the DCC managertion
-- Reads packet metadata from Radiotap interface
-Direct hardware transmission power control:
-- Sets TX power levels from 10-23 dBm via Netlink nl80211
-- Uses `NL80211_CMD_SET_TX_POWER` for direct kernel control (no system calls)
-- Dynamically scales power based on DCC congestion state
-- Optimizes transmit efficiency while managing channel utilizationPowerManager.h/cpp`)
-Manages transmit power adjustments:
-Modulation and Coding Scheme (MCS) adaptation:
-- Sets fixed transmission rates: 6, 12, 18, 24 Mbps
-- Uses Netlink nl80211 `NL80211_CMD_SET_TX_BITRATE_MASK` for rate control
-- Higher rates (24 Mbps) applied in more restrictive states for robustness
-- Adapts rates based on real-time channel congestion assessment
-### Rate Manager (`rate_manager.h/cpp`)
-Adapts transmission rate:
-- Adjusts data rate based on network conditions
-- Implements rate selection strategy
-- Mprehensive utility library providing:
-- Timestamp functions (monotonic, realtime, GN, CAM, CPM epochs)
-- Netlink socket creation and management
-- RSSI (signal strength) queries and monitoring
-- Logging and formatted output utilities
-- Timer file descriptor creation for scheduling
-
-### Vehicle Data Definitions (`vehicleDataDef.h`)
-Data structures for vehicular network communication:
-- `OptionalDataItem<T>`: Template for nullable/optional data fields
-- `vehicleData`: Complete vehicle record with position, speed, RSSI, and timestamps
-- `StationTypeLDM`: Vehicle classification enumeration (pedestrian, cyclist, car, truck, RSU, etc.)ions for:
-- Data conversion and encoding
-- Logging and debugging
-- Network utilities
-
-## API Reference
-
-### DccManager Class
-
-#### Constructor
-```cpp
-DccManager(std:: & Real-time Characteristics
-
-The implementation employs multiple synchronization mechanisms:
-- **Atomic Operations**: `std::atomic<bool>` for lock-free flag operations
-- **Mutex Protection**: Synchronized access to shared data structures
-- **POSIX Primitives**: Thread synchronization and condition variables
-- **Signal Handlers**: SIGINT handler for graceful shutdown with cleanup
-- **Real-time Scheduling**: SCHED_FIFO priority 70 for deterministic latency
-- **Non-bl & Monitoring
-
-Real-time system monitoring and diagnostics:
-- State transitions logged with CBR values and thresholds
-- Periodic CBR readings displayed (every monitoring cycle)
-- Power and rate adjustments reported with dBm and Mbps values
-- Error conditions clearly marked with context
-- 1-second monitoring output for visibility into system behavior
-
-Example output:
-```
-[MAIN] Avvio del sistema di controllo DCC...
-[DCC] Current state: ACTIVE_1, CBR: 35.2%
-[POWER] Adjusting Tx power to 19 dBm
-[RATE] Rate adjusted to 12 Mbps
-[DCC] Notification sent to CAM process
-^C
-[MAIN] Ricevuto Ctrl+C (SIGINT). Avvio chiusura pulita...
-[DCC] Cleanup completed
-The system provides console output for monitoring:
-- State transitions are logged
-- CBR readings are displayed periodically
-- Power and rate adjustments are reported
-- Error conditions are clearly marked
-
-Example output:
-```
-[MAIN] Avvio del sistema di controllo DCC...
-[DCC] Current state: ACTIVE_1, CBR: 35.2%
-[POWER] Adjusting Tx power to -10 dBm
-[RATE] Rate adjusted to 18 Mbps
-```
-
-## Troubleshooting
-
-### Permission Denied
-The program requires root privileges to access wireless interfaces:
-```bash
-sudo ./dcc wlan0 wlan1
-```
-
-### Interface Not Found
-Verify available interfaces:
-```bash
-iwconfig
-# or
-iw dev
-```
-
-### Netlink Errors
-Ensure libnl libraries are properly installed and can be linked:
-```bash
-pkg-config --cflags --libs libnl-3.0 libnl-genl-3.0
-```
-
-## Performance Considerations
-
-- Monitoring thread runs at configurable intervals (default: 100ms)
-- Real-time metric calculations based on recent packet activity
-- Minimal overhead for state transitions
-- Efficient atomic operations for lock-free checks
-
-## Contributing
-
-When contributing to this project:
-1. Follow the existing code style (C++17)
-2. Add thread-safety considerations for any new shared data
-3. Test with various wireless drivers
-4. Document new functionality
-
-## License
-
-[Add appropriate license information]
+See the [usage guide](GUIDA_USO.md#problemi-comuni) for troubleshooting and the
+[CAM guide](cam/README.md) for source-data and path-history limitations.
 
 ## Authors
 
-- netlab-dief team
-
-## References
-
-- IEEE 802.11 Wireless Standards
-- Linux Netlink Protocol Documentation
-- Wireless Extensions and nl80211 Driver Interface
-
----
-
-For more information and issues, please refer to the project repository.
-
-
-## Adaptive DCC and per-packet admission
-
-`--limeric` uses the ETSI TS 102 687 V1.2.1 §5.4 delta controller, with 100 ms
-CBR samples and UTC-aligned 200 ms updates. Reactive transitions move only to
-adjacent states after the existing persistence delays.
-
-Both modes expose a local UDP airtime gate at `127.0.0.1:5556`. Transmitters must
-request admission before **every** packet and report actual PHY airtime after TX
-completion. `airtime_client.py` provides a client; the external CAM/driver must
-supply the actual transmission callback. The gate cannot enforce traffic that
-bypasses it. The port 5555 interval is advisory and no longer assumes 0.5 ms airtime.
-See [GUIDA_USO.md](GUIDA_USO.md)
-for the protocol, conservative pacing policy and recovery rules.
-
-`make test` covers adaptive numerical reference values, saturation, sampling gaps,
-adjacent state transitions, variable airtime accounting, missing feedback,
-UDP admission/report exchanges, and the Python client.
-
-
-## Independent CBR acquisition
-
-`CbrSampler` owns a dedicated 100 ms UTC-aligned acquisition thread. Both DCC
-controllers consume timestamped, validated samples from a bounded buffer rather
-than querying Netlink themselves. Adaptive updates still use consecutive 100 ms
-pairs on 200 ms boundaries. Slow radio configuration does not delay sampling;
-missing, late or stale samples invalidate controller continuity and gate admission.
-The monitor reads the latest acquisition directly. See the usage guide for timing,
-restart and measurement-validity details. `make test` includes acquisition tests
-with a blocked consumer, driver exceptions, late reads, recovery and shutdown.
+netlab-dief team.
