@@ -37,7 +37,7 @@ int run(int argc, char* argv[]) {
     // Controllo parametri minimi obbligatori (nome_programma + interfaccia_standard + interfaccia_radiotap)
     if (argc < 3) {
         ConsoleLine(std::cerr) << "Errore: Parametri mancanti!" << std::endl;
-        ConsoleLine(std::cerr) << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric] [--fake-cbr] [--cam-static | --cam-gps <device>] [--cam-station-id <id>] [--cam-priority <0-7>] [--cam-force-100ms]" << std::endl;
+        ConsoleLine(std::cerr) << "Uso: " << argv[0] << " <interfaccia_rete> <interfaccia_radiotap> [--limeric] [--fake-cbr] [--dcc-net] [--dcc-net-eirp-offset-db <dB>] [--cam-static | --cam-gps <device>] [--cam-station-id <id>] [--cam-priority <0-7>] [--cam-force-100ms]" << std::endl;
         ConsoleLine(std::cerr) << "Esempio Reattivo: sudo " << argv[0] << " wlan0 wlan1" << std::endl;
         ConsoleLine(std::cerr) << "Esempio LIMERIC:  sudo " << argv[0] << " wlan0 wlan1 --limeric" << std::endl;
         ConsoleLine(std::cerr) << "Esempio Test CBR: sudo " << argv[0] << " wlan0 wlan1 --fake-cbr" << std::endl;
@@ -58,6 +58,9 @@ int run(int argc, char* argv[]) {
     // Controllo dei parametri opzionali
     bool use_limeric = false;
     bool use_fake_cbr = false;
+    bool use_dcc_net = false;
+    bool have_eirp_offset = false;
+    double eirp_offset_db = 0;
     cam::Options cam_options;
     auto numeric_option = [&](const std::string& option, int& index, std::uint64_t maximum) {
         if (++index >= argc) throw std::invalid_argument("Valore mancante per " + option);
@@ -72,6 +75,16 @@ int run(int argc, char* argv[]) {
         const std::string option = argv[i];
         if (option == "--limeric") {
             use_limeric = true;
+        } else if (option == "--dcc-net") {
+            use_dcc_net = true;
+        } else if (option == "--dcc-net-eirp-offset-db") {
+            if (++i >= argc) throw std::invalid_argument("Valore mancante per " + option);
+            const std::string value = argv[i];
+            std::size_t used = 0;
+            eirp_offset_db = std::stod(value, &used);
+            if (used != value.size() || !std::isfinite(eirp_offset_db) || std::abs(eirp_offset_db) > 31)
+                throw std::invalid_argument("Offset EIRP non valido (da -31 a 31 dB)");
+            have_eirp_offset = true;
         } else if (option == "--fake-cbr") {
             use_fake_cbr = true;
         } else if (option == "--cam-force-100ms") {
@@ -94,6 +107,9 @@ int run(int argc, char* argv[]) {
         }
     }
 
+    if (have_eirp_offset && !use_dcc_net)
+        throw std::invalid_argument("--dcc-net-eirp-offset-db richiede --dcc-net");
+
     if (cam_options.force_100ms && !cam_options.enabled)
         throw std::invalid_argument("--cam-force-100ms richiede --cam-static o --cam-gps <device>");
 
@@ -108,8 +124,10 @@ int run(int argc, char* argv[]) {
     ConsoleLine() << "[MAIN] Modalità Algoritmo: " << (use_limeric ? "LIMERIC (Adattativo)" : "Stati ETSI (Reattivo)") << std::endl;
     ConsoleLine() << "[MAIN] Sorgente CBR: " << (use_fake_cbr ? "file fake_cbr_value (TEST)" : "interfaccia wireless") << std::endl;
 
+    ConsoleLine() << "[MAIN] DCC_NET: " << (use_dcc_net ? "attivo (CBR globale)" : "disattivato (CBR locale)") << std::endl;
+
     // Istanziamo il manager
-    DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms, use_fake_cbr);
+    DccManager dcc_manager(interface_name, interface_radiotap, initial_interval_ms, use_fake_cbr, use_dcc_net, eirp_offset_db);
 
     // Avviamo il thread corretto in base alla scelta dell'utente
     ConsoleLine() << "[MAIN] Avvio del thread DCC Worker..." << std::endl;
@@ -131,7 +149,7 @@ int run(int argc, char* argv[]) {
         DccState current_state = dcc_manager.get_current_state();
         int current_interval = dcc_manager.get_current_interval_ms();
 
-        ConsoleLine() << "[MAIN MONITOR] CBR: " << current_cbr
+        ConsoleLine() << "[MAIN MONITOR] CBR locale: " << current_cbr
                   << "% | Stato: " << to_string(current_state, use_limeric) 
                   << " | T_off corrente: " << current_interval << " ms"
                   << std::endl;

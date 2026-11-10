@@ -2,7 +2,8 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from dashboard import CsvTail, age, number, status
+from dashboard import CsvTail, age, number, status, net_lines
+from datetime import datetime
 
 
 class DashboardTests(unittest.TestCase):
@@ -54,6 +55,21 @@ class DashboardTests(unittest.TestCase):
             rows = tail.poll()
             self.assertLess(len(rows), 25000)
             self.assertEqual(tail.latest['value'], '42')
+
+    def test_optional_net_telemetry_and_invalid_input(self):
+        tail = CsvTail('unused', [])
+        self.assertIn('--dcc-net', net_lines(tail)[0])
+        tail.latest = {'Timestamp': datetime.now().isoformat(), 'Valid': 'YES',
+                       'Local_CBR_Percent': '10', 'One_Hop_CBR_Percent': '90',
+                       'Two_Hop_CBR_Percent': '80', 'Global_CBR_Percent': '90', 'Neighbors': '2'}
+        first, second = net_lines(tail)
+        self.assertIn('locale 10%', first)
+        self.assertIn('globale 90%', second)
+        self.assertIn('vicini 2', second)
+        tail.latest['Valid'] = 'NO'
+        self.assertIn('ingresso non valido', net_lines(tail)[0])
+        tail.latest['Timestamp'] = '2000-01-01T00:00:00'
+        self.assertIn('nessun dato recente', net_lines(tail)[0])
 
     def test_bad_values_and_stale_timestamps(self):
         self.assertIsNone(number({'x': 'nan'}, 'x'))

@@ -10,25 +10,22 @@ static double map_linear(double x, double in_min, double in_max, double out_min,
 }
 
 DccManager::DccManager(std::string interface, std::string interface_radiotap,
-                       int initial_interval_ms, bool use_fake_cbr)
+                       int initial_interval_ms, bool use_fake_cbr, bool use_dcc_net, double eirp_offset_db)
     : interface_(std::move(interface)), 
       interface_radiotap_(std::move(interface_radiotap)),
       use_fake_cbr_(use_fake_cbr),
+      use_dcc_net_(use_dcc_net),
+      eirp_offset_db_(eirp_offset_db),
       stop_dcc_thread_(false),
       current_dcc_state_(DccState::UNKNOWN), 
       current_interval_ms_(initial_interval_ms)   
 {
-    // Inizializzazione Socket UDP per la notifica Cross-Layer
-    sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd_ < 0) {
-        ConsoleLine(std::cerr) << "[DCC ERROR] Impossibile creare il socket UDP per il cross-layer" << std::endl;
+    if (use_dcc_net_) {
+        net_log_.open("dcc_net_telemetry_log.csv", std::ios::out | std::ios::trunc);
+        if (!net_log_) throw std::runtime_error("Cannot open DCC_NET telemetry");
+        net_log_ << "Timestamp,Valid,Local_CBR_Percent,One_Hop_CBR_Percent,Two_Hop_CBR_Percent,Global_CBR_Percent,Neighbors\n";
+        net_log_.flush();
     }
-
-    std::memset(&cam_program_addr_, 0, sizeof(cam_program_addr_));
-    cam_program_addr_.sin_family = AF_INET;
-    cam_program_addr_.sin_port = htons(5555); // Porta d'ascolto sul programma CAM
-    cam_program_addr_.sin_addr.s_addr = inet_addr("127.0.0.1"); // Loopback locale
-
     // Apertura file CSV e creazione dell'header
     csv_log_file_.open("dcc_telemetry_log.csv", std::ios::out | std::ios::app);
     if (csv_log_file_.is_open()) {
@@ -44,9 +41,6 @@ DccManager::DccManager(std::string interface, std::string interface_radiotap,
 
 DccManager::~DccManager() {
     stop();
-    if (sockfd_ >= 0) {
-        close(sockfd_);
-    }
     if (csv_log_file_.is_open()) {
         csv_log_file_.close();
     }
@@ -118,16 +112,16 @@ void DccManager::start_worker(bool adaptive) {
     if (dcc_thread_.joinable()) return;
     last_cbr_from_file_ = false;
     cbr_reader.setupCBRReader(false, interface_);
-    gate_server_.start();
     stop_dcc_thread_ = false;
     try {
         cbr_sampler_.start([this] { return acquire_cbr(); });
+        if (use_dcc_net_) net_receiver_.start(interface_radiotap_, interface_, [this] { return cbr_sampler_.latest(); });
         dcc_thread_ = std::thread(adaptive ? &DccManager::limeric_worker_loop :
                                            &DccManager::dcc_worker_loop, this);
     } catch (...) {
         stop_dcc_thread_ = true;
+        net_receiver_.stop();
         cbr_sampler_.stop();
-        gate_server_.stop();
         throw;
     }
     struct sched_param param{};
@@ -151,10 +145,10 @@ void DccManager::stop() {
     }
     stop_dcc_thread_ = true;
     airtime_gate_.disable();
+    net_receiver_.stop();
     cbr_sampler_.stop(); // Also wakes a controller waiting for a sample.
     if (dcc_thread_.joinable()) dcc_thread_.join();
     airtime_gate_.disable();
-    gate_server_.stop();
 }
 
 void DccManager::start_cam(const cam::Options& options) {
@@ -163,10 +157,19 @@ void DccManager::start_cam(const cam::Options& options) {
     cam_telemetry_log_ = std::make_unique<cam::TelemetryLog>("cam_telemetry_estimated_log.csv");
     cam_sender_ = std::make_unique<cam::Sender>(airtime_gate_, interface_radiotap_, options,
         [this] { return get_current_interval_ms(); },
-        [this] { return get_current_bitrate_mbps(); });
+        [this] { return get_current_bitrate_mbps(); },
+        use_dcc_net_ ? std::function<void(std::vector<std::uint8_t>&, const std::function<void()>&)>(
+            [this](auto& frame, const auto& enqueue) { dispatch_net(frame, enqueue); }) :
+            std::function<void(std::vector<std::uint8_t>&, const std::function<void()>&)>{},
+        use_dcc_net_ ? std::function<bool()>([this] { return net_ready(); }) : std::function<bool()>{});
 }
 
 void DccManager::check_cam() {
+    if (use_dcc_net_) {
+        net_receiver_.check();
+        std::lock_guard<std::mutex> lock(power_mutex_);
+        if (power_failed_) throw std::runtime_error("DCC_NET requires successful TX power configuration and nl80211 power readback");
+    }
     if (!cam_sender_) return;
     const auto data = cam_sender_->telemetry();
     const double hz = cam_telemetry_log_->sample(data);
@@ -208,8 +211,11 @@ void DccManager::dcc_worker_loop() {
     std::uint64_t cursor = 0;
     std::optional<std::int64_t> previous_slot;
     while (!stop_dcc_thread_) {
-        const auto sample = cbr_sampler_.wait_next(cursor);
-        if (stop_dcc_thread_) break;
+        const auto sample = wait_control(cursor);
+        if (stop_dcc_thread_ || (use_dcc_net_ && net_receiver_.stopped())) {
+            airtime_gate_.disable();
+            break;
+        }
         if (!sample || !sample->fresh(CbrSample::Clock::now())) {
             state_machine.invalidate_observation();
             airtime_gate_.disable();
@@ -236,18 +242,12 @@ void DccManager::dcc_worker_loop() {
             current_tx_power = parameters.tx_power_dbm;
             current_mcs = parameters.mcs_mbps;
 
-            powerManager.set_tx_power(interface_, current_tx_power);
+            update_power(powerManager, current_tx_power);
             current_bitrate_mbps_.store(current_mcs, std::memory_order_relaxed);
             rate_manager.set_fixed_rate_netlink(current_mcs);
 
             current_dcc_state_.store(new_state, std::memory_order_relaxed);
             current_interval_ms_.store(new_interval, std::memory_order_relaxed);
-
-            if (sockfd_ >= 0) {
-                int32_t state_to_send = static_cast<int32_t>(new_state);
-                sendto(sockfd_, &state_to_send, sizeof(state_to_send), 0,
-                       (struct sockaddr*)&cam_program_addr_, sizeof(cam_program_addr_));
-            }
 
             ConsoleLine() << "\033[1;33m[DCC CAMBIO STATO] Stato: " << static_cast<int>(new_state)
                       << " | CBR: " << std::fixed << std::setprecision(2) << cbr_percent
@@ -263,14 +263,17 @@ void DccManager::limeric_worker_loop() {
     TxPowerManager powerManager;
     rate_manager.setup_rate_manager(interface_radiotap_);
     DccAdaptive controller;
-    int last_notified_interval = -1;
-    ConsoleLine() << "[DCC INIT] ETSI adaptive DCC; airtime gate on 127.0.0.1:5556" << std::endl;
+    int last_logged_interval = -1;
+    ConsoleLine() << "[DCC INIT] ETSI adaptive DCC; internal CAM airtime gate" << std::endl;
 
     std::uint64_t cursor = 0;
     std::optional<std::int64_t> previous_slot;
     while (!stop_dcc_thread_) {
-        const auto sample = cbr_sampler_.wait_next(cursor);
-        if (stop_dcc_thread_) break;
+        const auto sample = wait_control(cursor);
+        if (stop_dcc_thread_ || (use_dcc_net_ && net_receiver_.stopped())) {
+            airtime_gate_.disable();
+            break;
+        }
         if (!sample || !sample->fresh(CbrSample::Clock::now())) {
             controller.invalidate();
             airtime_gate_.disable();
@@ -293,26 +296,64 @@ void DccManager::limeric_worker_loop() {
             const int mapped = static_cast<int>(map_linear(raw_cbr * 100.0, 30.0, 65.0, 12.0, 24.0));
             rate = mapped >= 24 ? 24 : (mapped >= 18 ? 18 : 12);
         }
-        powerManager.set_tx_power(interface_, power);
+        update_power(powerManager, power);
         current_bitrate_mbps_.store(rate, std::memory_order_relaxed);
         rate_manager.set_fixed_rate_netlink(rate);
-        const bool notify = last_notified_interval < 0 || std::abs(interval - last_notified_interval) >= 5;
-        if (notify) {
-            if (sockfd_ >= 0) {
-                const int32_t value = interval;
-                if (sendto(sockfd_, &value, sizeof(value), 0,
-                    reinterpret_cast<sockaddr*>(&cam_program_addr_), sizeof(cam_program_addr_)) >= 0)
-                    last_notified_interval = interval;
-            }
+        const bool log_update = last_logged_interval < 0 || std::abs(interval - last_logged_interval) >= 5;
+        if (log_update) {
+            last_logged_interval = interval;
             ConsoleLine() << "[DCC ADAPTIVE] CBR: " << raw_cbr * 100.0f
                       << "% | filtered: " << controller.filtered_cbr() * 100.0
                       << "% | delta: " << controller.delta()
                       << " | advisory interval: " << interval << " ms" << std::endl;
         }
-        log_telemetry("LIMERIC", raw_cbr * 100.0f, interval, power, rate, notify);
+        log_telemetry("LIMERIC", raw_cbr * 100.0f, interval, power, rate, log_update);
     }
 }
 
 int DccManager::get_current_bitrate_mbps() const {
     return current_bitrate_mbps_.load(std::memory_order_relaxed);
+}
+
+
+std::optional<CbrSample> DccManager::wait_control(std::uint64_t& cursor) {
+    if (!use_dcc_net_) return cbr_sampler_.wait_next(cursor);
+    const auto snapshot = net_state_.wait_next(cursor);
+    if (!snapshot) return {};
+    net_log_ << get_iso8601_timestamp() << ',' << (snapshot->control.valid ? "YES" : "NO") << ','
+             << snapshot->local * 100 << ',' << snapshot->one_hop * 100 << ','
+             << snapshot->two_hop * 100 << ',' << snapshot->global * 100 << ',' << snapshot->neighbors << '\n';
+    net_log_.flush();
+    return snapshot->control;
+}
+
+void DccManager::update_power(TxPowerManager& manager, int power) {
+    if (!use_dcc_net_) { manager.set_tx_power(interface_, power); return; }
+    // Serialize configuration/readback with DCC-MCO patching and driver enqueue.
+    std::lock_guard<std::mutex> lock(power_mutex_);
+    confirmed_power_.reset();
+    if (manager.set_tx_power(interface_, power, true)) confirmed_power_ = manager.get_tx_power(interface_);
+    power_failed_ = !confirmed_power_;
+    if (power_failed_) {
+        stop_dcc_thread_ = true;
+        airtime_gate_.disable();
+    }
+}
+
+void DccManager::dispatch_net(std::vector<std::uint8_t>& frame, const std::function<void()>& enqueue) {
+    std::lock_guard<std::mutex> lock(power_mutex_);
+    const auto snapshot = net_state_.snapshot();
+    const auto local = cbr_sampler_.latest();
+    const auto now = CbrSample::Clock::now();
+    if (net_receiver_.stopped() || !confirmed_power_ || !snapshot.control.fresh(now) || !local || !local->fresh(now))
+        throw std::runtime_error("DCC_NET data/power expired after admission; transmission stopped");
+    dccnet::write_extension(frame, local->value, snapshot.one_hop, *confirmed_power_ + eirp_offset_db_);
+    enqueue();
+}
+
+bool DccManager::net_ready() {
+    std::lock_guard<std::mutex> lock(power_mutex_);
+    const auto local = cbr_sampler_.latest();
+    const auto now = CbrSample::Clock::now();
+    return !net_receiver_.stopped() && confirmed_power_ && net_state_.snapshot().control.fresh(now) && local && local->fresh(now);
 }

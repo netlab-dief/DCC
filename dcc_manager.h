@@ -6,11 +6,6 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
-#include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -24,15 +19,16 @@
 #include "rate_manager.h"
 #include "dcc_state_machine.h"
 #include "dcc_adaptive.h"
-#include "gate_server.h"
 #include "cbr_sampler.h"
+#include "gn_receiver.h"
 #include "cam/cam_sender.h"
 #include <memory>
 
 class DccManager {
 public:
     DccManager(std::string interface, std::string interface_radiotap,
-               int initial_interval_ms = 100, bool use_fake_cbr = false);
+               int initial_interval_ms = 100, bool use_fake_cbr = false,
+               bool use_dcc_net = false, double eirp_offset_db = 0);
     ~DccManager();
 
     void start();
@@ -49,6 +45,10 @@ public:
 private:
     void start_worker(bool adaptive);
     float acquire_cbr();
+    std::optional<CbrSample> wait_control(std::uint64_t& cursor);
+    void update_power(TxPowerManager& manager, int power);
+    bool net_ready();
+    void dispatch_net(std::vector<std::uint8_t>& frame, const std::function<void()>& enqueue);
     void dcc_worker_loop();
     void limeric_worker_loop();
 
@@ -65,6 +65,14 @@ private:
     std::string interface_;
     std::string interface_radiotap_;
     bool use_fake_cbr_;
+    bool use_dcc_net_;
+    double eirp_offset_db_;
+    dccnet::State net_state_;
+    GnReceiver net_receiver_{net_state_};
+    std::ofstream net_log_;
+    std::mutex power_mutex_;
+    std::optional<double> confirmed_power_;
+    bool power_failed_ = false;
     bool last_cbr_from_file_ = false; // Accessed only by the acquisition thread.
     std::atomic<bool> stop_dcc_thread_;
     std::thread dcc_thread_;
@@ -74,16 +82,12 @@ private:
     std::atomic<int> current_bitrate_mbps_{6};
     double current_tx_rate_ = 10.0; // Inizializzato a 10 Hz (100ms) per LIMERIC
 
-    int sockfd_;
-    struct sockaddr_in cam_program_addr_;
-
     // Oggetti di supporto hardware e rete
     CBRReader cbr_reader;
     CbrSampler cbr_sampler_;
     RateManager rate_manager;
 
     AirtimeGate airtime_gate_;
-    GateServer gate_server_{airtime_gate_};
     std::unique_ptr<cam::Sender> cam_sender_;
     std::unique_ptr<cam::TelemetryLog> cam_telemetry_log_;
 

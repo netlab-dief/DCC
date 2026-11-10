@@ -24,9 +24,10 @@
 
 namespace cam {
 Sender::Sender(AirtimeGate& gate, std::string interface, Options options,
-               std::function<int()> dcc_interval, std::function<int()> bitrate)
+               std::function<int()> dcc_interval, std::function<int()> bitrate,
+               std::function<void(std::vector<std::uint8_t>&, const std::function<void()>&)> dispatch, std::function<bool()> network_ready)
     : gate_(gate), interface_(std::move(interface)), options_(std::move(options)),
-      dcc_interval_(std::move(dcc_interval)), bitrate_(std::move(bitrate)),
+      dcc_interval_(std::move(dcc_interval)), bitrate_(std::move(bitrate)), dispatch_(std::move(dispatch)), network_ready_(std::move(network_ready)),
       thread_([this] {
           try { run(); }
           catch (...) { std::lock_guard<std::mutex> lock(mutex_); failure_ = std::current_exception(); }
@@ -148,20 +149,28 @@ void Sender::run() {
                 auto selected_since = AirtimeGate::Clock::now();
                 auto injected_at = selected_since;
                 const bool sent = transmit(gate_, id, 1, [&] {
-                    if (!selected || !selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence))
-                        throw std::runtime_error("CAM expired after admission; reservation remains closed");
-                    injected_at = AirtimeGate::Clock::now();
-                    const auto written = sendto(radio.value, selected->frame.data(), selected->frame.size(), 0,
-                        reinterpret_cast<sockaddr*>(&destination), sizeof(destination));
-                    checked(written >= 0, "CAM send");
-                    if (written != static_cast<ssize_t>(selected->frame.size()))
-                        throw std::runtime_error("Incomplete CAM driver enqueue");
+                    if (!selected) throw std::runtime_error("CAM missing after admission");
+                    auto enqueue = [&] {
+                        // NET dispatch may wait for an in-flight power update.
+                        // Recheck expiry and lifetime after that wait, under its lock.
+                        if (!selected->prepare_for_tx(AirtimeGate::Clock::now(), sequence))
+                            throw std::runtime_error("CAM expired after admission; reservation remains closed");
+                        injected_at = AirtimeGate::Clock::now();
+                        const auto written = sendto(radio.value, selected->frame.data(), selected->frame.size(), 0,
+                            reinterpret_cast<sockaddr*>(&destination), sizeof(destination));
+                        checked(written >= 0, "CAM send");
+                        if (written != static_cast<ssize_t>(selected->frame.size()))
+                            throw std::runtime_error("Incomplete CAM driver enqueue");
+                    };
+                    if (dispatch_) dispatch_(selected->frame, enqueue);
+                    else enqueue();
                     telemetry_.submitted(
                         std::chrono::duration<double, std::milli>(injected_at - selected->generated_at).count(),
                         std::chrono::duration<double, std::milli>(injected_at - selected_since).count());
                     generation.submitted(selected->version);
                     ++sequence;
                 }, stopping_, [&] {
+                    if (network_ready_ && !network_ready_()) return false;
                     const auto previous_version = selected ? selected->version : 0;
                     selected = generation.latest(AirtimeGate::Clock::now());
                     if (selected && selected->version != previous_version) selected_since = AirtimeGate::Clock::now();

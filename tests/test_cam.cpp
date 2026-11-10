@@ -1,5 +1,6 @@
 #include "cam/cam_message.h"
 #include "cam/cam_sender.h"
+#include "dcc_net.h"
 extern "C" {
 #include "CAM.h"
 #include "per_decoder.h"
@@ -57,12 +58,24 @@ void test_encoding() {
     const std::array<std::uint8_t, 6> mac{1, 2, 3, 4, 5, 6};
     const auto frame = cam::make_frame(p, 123456, mac, 7, 0x12345678);
     require(frame.size() == payload.size() + 86, "no truncation or padding of CAM payload");
+    require(std::all_of(frame.begin() + 78, frame.begin() + 82, [](auto byte) { return byte == 0; }),
+        "DCC_NET disabled: generated frame keeps reserved bytes zero");
+    auto net_frame = frame;
+    cam::set_legacy_rate(net_frame, 12);
+    const auto airtime = cam::estimate_airtime_us(net_frame, 12);
+    dccnet::write_extension(net_frame, 0.5, 0.75, 23);
+    const auto remote = dccnet::parse(net_frame);
+    require(remote && remote->tx_eirp_dbm == 23 && std::abs(remote->local - 127 / 255.0) < 1e-8 &&
+            remote->address[7] == mac[5], "DCC_NET round trip on generated CAM with inserted radiotap RATE");
+    require(cam::estimate_airtime_us(net_frame, 12) == airtime && net_frame.size() == frame.size() + 1,
+        "DCC-MCO patch preserves frame length and estimated airtime");
     require(frame[2] == 8 && frame[8] == 0x88, "radiotap and QoS data headers");
     require(frame[44] == 0x50, "CAM GN lifetime is at most 1000 ms");
     require(std::equal(mac.begin(), mac.end(), frame.begin() + 18), "radio source MAC");
     require(frame[30] == 0x70 && frame[31] == 0, "802.11 sequence");
     require(frame[50] * 256U + frame[51] == payload.size() + 4, "GN payload length includes BTP");
     require(frame[74] == (514 >> 8) && frame[75] == (514 & 255), "GN speed precedes heading");
+    require(frame[76] * 256U + frame[77] == 1234, "valid moving GN heading preserved");
     require(frame[82] == 7 && frame[83] == 0xd1, "CAM BTP port 2001");
     require(std::equal(payload.begin(), payload.end(), frame.begin() + 86), "complete UPER bytes");
     require(cam::Options{}.priority == 3 && frame[32] == 3 && frame[33] == 0, "CAM defaults to UP3 / AC_BE");
@@ -82,6 +95,25 @@ void test_encoding() {
         try { cam::make_frame(p, 123456, mac, 7, 0x12345678, invalid); }
         catch (const std::invalid_argument&) { rejected = true; }
         require(rejected, "invalid priority rejected before encoding");
+    }
+    // Regression: CAM's unavailable sentinel must not appear as 360.1 degrees
+    // in GN. Verify the actual decoded CAM payload remains independent.
+    struct HeadingCase { int speed, cam_heading; unsigned gn_heading; };
+    for (const auto& test : {HeadingCase{0, 3601, 0}, HeadingCase{5, 3601, 0},
+                             HeadingCase{0, 1234, 0}, HeadingCase{5, 3600, 0},
+                             HeadingCase{5, 3599, 3599}, HeadingCase{5, 0, 0}}) {
+        auto position = p;
+        position.speed = test.speed;
+        position.heading = test.cam_heading;
+        const auto packet = cam::make_frame(position, 123456, mac, 0, 0);
+        require(packet[76] * 256U + packet[77] == test.gn_heading, "GN heading mapping");
+        CAM_t* cam_payload = nullptr;
+        const auto decoded_payload = uper_decode_complete(nullptr, &asn_DEF_CAM,
+            reinterpret_cast<void**>(&cam_payload), packet.data() + 86, packet.size() - 86);
+        require(decoded_payload.code == RC_OK && cam_payload, "decode heading regression payload");
+        require(cam_payload->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency
+                    .heading.headingValue == test.cam_heading, "CAM heading unchanged by GN mapping");
+        ASN_STRUCT_FREE(asn_DEF_CAM, cam_payload);
     }
 }
 

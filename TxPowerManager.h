@@ -2,6 +2,7 @@
 #define TX_POWER_MANAGER_H
 
 #include <string>
+#include <optional>
 
 class TxPowerManager {
 public:
@@ -14,7 +15,8 @@ public:
      * @param power_dbm Potenza desiderata in dBm
      * @return true se il comando ha successo, false in caso di errore
      */
-    bool set_tx_power(const std::string& interface_name, int power_dbm);
+    std::optional<double> get_tx_power(const std::string& interface_name);
+    bool set_tx_power(const std::string& interface_name, int power_dbm, bool bounded_io = false);
 };
 
 #endif // TX_POWER_MANAGER_H

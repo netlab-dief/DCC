@@ -1,10 +1,6 @@
 #include "dcc_adaptive.h"
 #include "airtime_gate.h"
-#include "gate_server.h"
 
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -60,58 +56,31 @@ void test_gate() {
     gate.configure(0.01, 25ms, t0);
     require(gate.handle("ADMIT 1 500", t0) == "GRANT 1", "first packet granted");
     require(gate.handle("ADMIT 1 500", t0) == "ERROR stale_id", "duplicate grants never replayed");
-    require(gate.handle("ADMIT 2 500", t0 + 1ms).find("WAIT") == 0, "one outstanding TX across clients");
-    require(gate.handle("REPORT 2 500", t0) == "ERROR reservation", "mismatched reports rejected");
-    require(gate.handle("REPORT 1 1000", t0 + 2ms) == "DONE 1", "actual airtime corrects underestimate");
-    require(gate.handle("REPORT 1 1000", t0 + 3ms) == "DONE 1", "report retries idempotent");
+    require(gate.handle("ADMIT 2 500", t0 + 1ms).find("WAIT") == 0, "one outstanding CAM enqueue");
+    require(gate.handle("ACCOUNT 2 500", t0) == "ERROR reservation", "mismatched accounting rejected");
+    require(gate.handle("ACCOUNT 1 1000", t0 + 2ms) == "DONE 1", "accounting charges at least the supplied estimate");
+    require(gate.handle("ACCOUNT 1 1000", t0 + 3ms) == "DONE 1", "accounting retries idempotent");
     require(gate.handle("ADMIT 2 200", t0 + 101ms) == "WAIT 2 1000", "1000us at one percent needs 100ms");
     require(gate.handle("ADMIT 2 200", t0 + 102ms) == "GRANT 2", "exact reopening boundary");
     gate.configure(0.001, 25ms, t0 + 103ms);
     gate.configure(0.03, 25ms, t0 + 104ms);
-    require(gate.handle("REPORT 2 100", t0 + 105ms) == "DONE 2", "smaller actual duration cannot refund reservation");
+    require(gate.handle("ACCOUNT 2 100", t0 + 105ms) == "DONE 2", "smaller estimate cannot refund reservation");
     require(gate.handle("ADMIT 3 100", t0 + 304ms) == "WAIT 3 1000", "tightest pending budget preserved");
     gate.configure(0.03, 25ms, t0 + 305ms);
     require(gate.handle("ADMIT 3 100", t0 + 305ms) == "GRANT 3", "budget updates retain debt");
-    gate.handle("REPORT 3 100", t0 + 306ms);
+    gate.handle("ACCOUNT 3 100", t0 + 306ms);
     require(gate.handle("ADMIT 4 100", t0 + 330ms) == "WAIT 4 1000", "25ms minimum spacing");
     require(gate.handle("ADMIT 4 100", t0 + 900ms).find("WAIT") == 0, "expired CBR blocks admissions");
     gate.configure(0.03, 100ms, t0 + 900ms);
     require(gate.handle("ADMIT 4 100", t0 + 900ms) == "GRANT 4", "reactive profile usable");
-    gate.handle("REPORT 4 100", t0 + 901ms);
+    gate.handle("ACCOUNT 4 100", t0 + 901ms);
     require(gate.handle("ADMIT 5 100", t0 + 1000ms) == "WAIT 5 1000", "reactive minimum interval enforced");
+    require(gate.handle("REPORT 5 100", t0 + 1001ms) == "ERROR command", "external measured-report command is unsupported");
     gate.disable();
     require(gate.handle("ADMIT 5 100", t0 + 1002ms).find("WAIT") == 0, "invalid CBR disables gate");
     for (const auto* request : {"ADMIT -1 500", "ADMIT 1 nan", "ADMIT 0 500", "ADMIT 8 0",
-         "ADMIT 8 1000001", "REPORT 8 500 extra", "ADMIT 999999999999999999999999 500"})
+         "ADMIT 8 1000001", "ACCOUNT 8 500 extra", "ADMIT 999999999999999999999999 500"})
         require(gate.handle(request, t0).find("ERROR") == 0, "malformed request rejected");
-}
-
-void test_server() {
-    AirtimeGate gate;
-    gate.configure(0.01, 25ms, AirtimeGate::Clock::now());
-    GateServer server(gate, 0);
-    server.start();
-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    require(fd >= 0, "client socket");
-    timeval timeout{1, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(server.port());
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    auto exchange = [&](const std::string& request) {
-        sendto(fd, request.data(), request.size(), 0, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-        char reply[256];
-        const auto count = recv(fd, reply, sizeof(reply), 0);
-        require(count > 0, "gate server replies over UDP");
-        return std::string(reply, static_cast<std::size_t>(count));
-    };
-    require(exchange("ADMIT 1 500") == "GRANT 1", "live admission");
-    require(exchange("REPORT 1 700") == "DONE 1", "live completion feedback");
-    close(fd);
-    server.stop();
-    server.start();
-    server.stop();
 }
 
 void test_estimated_accounting() {
@@ -131,7 +100,6 @@ void test_estimated_accounting() {
 int main() {
     test_adaptive();
     test_gate();
-    test_server();
     test_estimated_accounting();
-    std::cout << "All adaptive DCC, airtime gate and UDP integration tests passed\n";
+    std::cout << "All adaptive DCC and internal airtime gate tests passed\n";
 }

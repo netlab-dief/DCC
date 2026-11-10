@@ -5,9 +5,9 @@
 #include <mutex>
 #include <string>
 
-// One gate per radio channel, shared by every transmitting service.
-// A grant reserves one packet. REPORT accounts measured completion; ACCOUNT
-// accounts estimated airtime after successful driver enqueue (no PHY claim).
+// Internal admission gate for the integrated CAM transmitter.
+// A grant reserves one packet. ACCOUNT charges estimated airtime after
+// successful driver enqueue (no PHY completion claim).
 class AirtimeGate {
 public:
     using Clock = std::chrono::steady_clock;
