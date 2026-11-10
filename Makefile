@@ -1,86 +1,76 @@
-# Compiler settings
+# Compilers and platform dependencies.
 CC = gcc
 CXX = g++
-
-# Netlink flags necessari per CBRReader
 NL_CFLAGS := $(shell pkg-config --cflags libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -I/usr/include/libnl3)
-NL_LIBS   := $(shell pkg-config --libs libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -lnl-3 -lnl-genl-3)
+NL_LIBS := $(shell pkg-config --libs libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -lnl-3 -lnl-genl-3)
 
-# Gli header ASN.1 sono inclusi anche dai sorgenti C++ del generatore CAM.
-CFLAGS = -Wall -Icam/UtilsEncode -MMD -MP
-CXXFLAGS = -Wall -Icam/UtilsEncode $(NL_CFLAGS) -std=c++17 -MMD -MP
-LDFLAGS = -lpthread -lssl -lcrypto -lm $(NL_LIBS)
+# cam/ is preserved, including its relative includes of former root headers.
+# Generated forwarding headers let those includes resolve without editing cam/.
+COMPAT_HEADERS := build/include/console_log.h build/include/airtime_gate.h
+PROJECT_INCLUDES := -I. -Isrc -Ibuild/include/cam -Icam/UtilsEncode
+CPPFLAGS += $(PROJECT_INCLUDES)
+CFLAGS = -Wall -MMD -MP
+CXXFLAGS = -Wall $(NL_CFLAGS) -std=c++17 -MMD -MP
+LDLIBS = -lpthread -lssl -lcrypto -lm $(NL_LIBS)
+TEST_FLAGS = -Wall -Wextra -Werror -std=c++17 -pthread
 
-# Directories
-C_DIR = cam/UtilsEncode
-CXX_DIR = .
-OUTPUT_DIR = .
-
-# C source files
-C_SOURCES := $(wildcard $(C_DIR)/*.c)
-
-# C++ source files (AGGIUNTO dcc/utils.cpp alla lista)
-CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp cbr_sampler.cpp dcc_net.cpp gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp
-
-# Object files
-C_OBJS := $(patsubst $(C_DIR)/%.c, $(C_DIR)/%.o, $(C_SOURCES))
-CXX_OBJS := $(patsubst %.cpp, %.o, $(CXX_SOURCES))
-
-# Output binary in the main folder
+C_SOURCES := $(wildcard cam/UtilsEncode/*.c)
+CXX_SOURCES := src/app/main.cpp src/radio/CBRReader.cpp src/common/utils.cpp \
+    src/radio/TxPowerManager.cpp src/dcc/dcc_manager.cpp src/radio/rate_manager.cpp \
+    src/dcc/dcc_state_machine.cpp src/dcc/airtime_gate.cpp src/radio/cbr_sampler.cpp \
+    src/net/dcc_net.cpp src/net/gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp
+C_OBJS := $(patsubst %.c,build/%.o,$(C_SOURCES))
+CXX_OBJS := $(patsubst %.cpp,build/%.o,$(CXX_SOURCES))
+PROJECT_HEADERS := $(wildcard src/*/*.h cam/*.h)
 TARGET = dcc
+TEST_NAMES := test_dcc_state_machine test_dcc_control test_cbr_sampler test_cam test_console_log test_dcc_net
+TEST_BINS := $(addprefix build/tests/,$(TEST_NAMES))
 
 .DEFAULT_GOAL := all
+.PHONY: all clean test test-cpp test-python
 -include $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d)
 
-# Default rule
 all: $(TARGET)
 
-# Compile C files
-$(C_DIR)/%.o: $(C_DIR)/%.c
-	$(CC) $(CFLAGS) -o $@ -c $<
-
-# Compile C++ files
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -o $@ -c $<
-
-# Link everything, placing the final binary in the main folder
 $(TARGET): $(C_OBJS) $(CXX_OBJS)
-	$(CXX) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-# Clean up object files and executable
-clean:
-	rm -f $(C_OBJS) $(CXX_OBJS) $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log tests/test_dcc_net
+build/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-.PHONY: all clean test test-cpp test-python
+build/%.o: %.cpp | $(COMPAT_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+build/include/console_log.h:
+	@mkdir -p build/include/cam
+	@printf '#pragma once\n#include "common/console_log.h"\n' > $@
+
+build/include/airtime_gate.h:
+	@mkdir -p build/include/cam
+	@printf '#pragma once\n#include "dcc/airtime_gate.h"\n' > $@
+
+$(TEST_BINS): $(PROJECT_HEADERS) | $(COMPAT_HEADERS)
+
+build/tests/test_dcc_state_machine: src/dcc/dcc_state_machine.cpp
+build/tests/test_dcc_control: src/dcc/airtime_gate.cpp
+build/tests/test_cbr_sampler: src/radio/cbr_sampler.cpp
+build/tests/test_cam: src/net/dcc_net.cpp cam/cam_message.cpp cam/cam_sender.cpp src/dcc/airtime_gate.cpp $(C_OBJS)
+build/tests/test_dcc_net: src/net/dcc_net.cpp src/dcc/dcc_state_machine.cpp src/net/gn_receiver.cpp
+
+build/tests/%: tests/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(TEST_FLAGS) $(filter %.cpp %.o,$^) -o $@
 
 test: test-cpp test-python
 
-test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log tests/test_dcc_net
-	./tests/test_dcc_state_machine
-	./tests/test_dcc_control
-	./tests/test_cbr_sampler
-	./tests/test_cam
-	./tests/test_console_log
-	./tests/test_dcc_net
-
-tests/test_console_log: tests/test_console_log.cpp console_log.h
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_console_log.cpp -o $@
-
-tests/test_cam: tests/test_cam.cpp dcc_net.cpp dcc_net.h cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h cam/cam_telemetry.h cam/airtime_estimator.h console_log.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. -Icam/UtilsEncode tests/test_cam.cpp dcc_net.cpp cam/cam_message.cpp cam/cam_sender.cpp airtime_gate.cpp $(C_OBJS) -o $@
-
-tests/test_dcc_state_machine: tests/test_dcc_state_machine.cpp dcc_state_machine.cpp dcc_state_machine.h
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -I. tests/test_dcc_state_machine.cpp dcc_state_machine.cpp -o $@
+test-cpp: $(TEST_BINS)
+	@set -e; for test_binary in $(TEST_BINS); do "./$$test_binary"; done
 
 test-python:
 	python3 -m unittest discover -s tests -p 'test_*.py' -v
 
-tests/test_dcc_control: tests/test_dcc_control.cpp dcc_adaptive.h airtime_gate.cpp airtime_gate.h
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_dcc_control.cpp airtime_gate.cpp -o $@
-
-tests/test_cbr_sampler: tests/test_cbr_sampler.cpp cbr_sampler.cpp cbr_sampler.h dcc_adaptive.h
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_cbr_sampler.cpp cbr_sampler.cpp -o $@
-
-
-tests/test_dcc_net: tests/test_dcc_net.cpp dcc_net.cpp dcc_net.h dcc_state_machine.cpp dcc_state_machine.h dcc_adaptive.h gn_receiver.cpp gn_receiver.h
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_dcc_net.cpp dcc_net.cpp dcc_state_machine.cpp gn_receiver.cpp -o $@
+clean:
+	rm -rf build
+	rm -f $(TARGET)

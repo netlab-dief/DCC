@@ -1,5 +1,5 @@
-#include "console_log.h"
-#include "CBRReader.h"
+#include "common/console_log.h"
+#include "radio/CBRReader.h"
 #include <stdexcept>
 #include <mutex> // Incluso per std::mutex e std::lock_guard
 

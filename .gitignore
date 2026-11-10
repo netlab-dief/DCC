@@ -20,3 +20,6 @@ cam_telemetry_estimated_log.csv
 
 tests/test_dcc_net
 dcc_net_telemetry_log.csv
+
+# Out-of-source objects, dependencies, compatibility headers and test binaries.
+/build/

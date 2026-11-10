@@ -9,10 +9,29 @@ load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
 
 | Guide | Contents |
 | --- | --- |
-| [Usage](USAGE.md) | Installation, every command-line option, controller settings, telemetry, internal admission and troubleshooting |
+| [Usage](docs/usage.md) | Installation, every command-line option, controller settings, telemetry, internal admission and troubleshooting |
 | [CAM](cam/README.md) | Source data, generation rules, frame format, EDCA, estimated airtime and limitations |
-| [DCC_NET](DCC_NET.md) | Neighbour reception, global CBR, DCC-MCO encoding, radio requirements and validation |
-| [Architecture](CODEBASE_ANALYSIS.md) | Modules, ownership, threads, timing, admission and failure handling |
+| [DCC_NET](docs/dcc-net.md) | Neighbour reception, global CBR, DCC-MCO encoding, radio requirements and validation |
+| [Architecture](docs/architecture.md) | Modules, ownership, threads, timing, admission and failure handling |
+
+## Repository layout
+
+| Directory | Contents |
+| --- | --- |
+| `src/app/` | Executable entry point |
+| `src/dcc/` | Controllers, manager and internal airtime gate |
+| `src/radio/` | CBR acquisition and radio configuration |
+| `src/net/` | DCC_NET state and monitor receiver |
+| `src/common/` | Shared logging, utilities and data definitions |
+| `cam/` | Existing CAM implementation, ASN.1 sources, schemas and guide; preserved in place |
+| `tools/` | Python dashboard and synthetic CBR generator |
+| `tests/` | C++ and Python test sources |
+| `docs/` | Usage, architecture and DCC_NET guides |
+| `build/` | Generated objects, dependencies, test binaries and compatibility headers |
+
+The main executable remains `./dcc`. Commands below run from the repository
+root; telemetry and synthetic input paths still use the working directory.
+Root-level documentation forwarding pages preserve links from `cam/README.md`.
 
 ## Build
 
@@ -77,7 +96,7 @@ sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
 
 Both interface arguments are always required. CAM generation is disabled until
 one source is selected. `--cam-static` and `--cam-gps` are mutually exclusive.
-See the [complete option reference](USAGE.md#command-line-reference) for defaults,
+See the [complete option reference](docs/usage.md#command-line-reference) for defaults,
 validation and additional settings. Press Ctrl+C or send SIGTERM to stop.
 
 ## Generation, admission and transmission
@@ -98,7 +117,7 @@ than PHY completion or delivery. The airtime model uses 10 MHz OFDM timings;
 
 Reactive control uses five states with asymmetric transition persistence.
 Adaptive control updates a delta airtime budget on consecutive CBR samples.
-The [usage guide](USAGE.md#controllers) documents thresholds, requested radio
+The [usage guide](docs/usage.md#controllers) documents thresholds, requested radio
 settings and gate timing. With `--dcc-net`, both controllers use global CBR;
 the main console monitor continues to show local CBR.
 
@@ -115,13 +134,13 @@ Telemetry is written in the working directory:
 In another terminal on the same host:
 
 ```bash
-python3 dashboard.py
-python3 dashboard.py --log-dir /path/to/logs
+python3 tools/dashboard.py
+python3 tools/dashboard.py --log-dir /path/to/logs
 ```
 
 The dashboard requires Python's standard `curses` module and a terminal of at
 least 72 columns by 24 rows. Press `q`, Escape or Ctrl+C to close it; DCC continues
-running. See [telemetry](USAGE.md#telemetry) for column definitions and freshness.
+running. See [telemetry](docs/usage.md#telemetry) for column definitions and freshness.
 
 The integrated CAM generator calls the internal airtime gate directly. Admission
 and estimated-airtime accounting run inside the DCC process; no external client
@@ -132,7 +151,7 @@ or local UDP service is used.
 In one terminal, write synthetic fractional CBR values:
 
 ```bash
-python3 cbr_generator.py --output fake_cbr_value
+python3 tools/cbr_generator.py --output fake_cbr_value
 ```
 
 From the same working directory, start reactive control in another terminal:

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cbr_sampler.h"
+#include "radio/cbr_sampler.h"
 #include <array>
 #include <condition_variable>
 #include <map>

@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-import cbr_generator
+from tools import cbr_generator
 
 
 def args(**overrides):

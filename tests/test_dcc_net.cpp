@@ -1,6 +1,6 @@
-#include "dcc_net.h"
-#include "dcc_adaptive.h"
-#include "dcc_state_machine.h"
+#include "net/dcc_net.h"
+#include "dcc/dcc_adaptive.h"
+#include "dcc/dcc_state_machine.h"
 #include <cmath>
 #include <cstdlib>
 #include <future>

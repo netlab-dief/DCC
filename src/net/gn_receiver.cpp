@@ -1,4 +1,4 @@
-#include "gn_receiver.h"
+#include "net/gn_receiver.h"
 #include <algorithm>
 #include <cerrno>
 #include <cstring>

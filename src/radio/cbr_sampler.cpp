@@ -1,4 +1,4 @@
-#include "cbr_sampler.h"
+#include "radio/cbr_sampler.h"
 
 #include <cmath>
 #include <stdexcept>

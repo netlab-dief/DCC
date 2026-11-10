@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from dashboard import CsvTail, age, number, status, net_lines
+from tools.dashboard import CsvTail, age, number, status, net_lines
 from datetime import datetime
 
 

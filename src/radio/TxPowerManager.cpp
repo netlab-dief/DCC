@@ -1,5 +1,5 @@
-#include "console_log.h"
-#include "TxPowerManager.h"
+#include "common/console_log.h"
+#include "radio/TxPowerManager.h"
 #include <iostream>
 #include <net/if.h> // Per if_nametoindex
 #include <netlink/netlink.h>

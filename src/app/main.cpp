@@ -1,4 +1,4 @@
-#include "console_log.h"
+#include "common/console_log.h"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -6,7 +6,7 @@
 #include <atomic>
 #include <string>
 #include <stdexcept>
-#include "dcc_manager.h"
+#include "dcc/dcc_manager.h"
 
 // Variabile atomica globale per controllare il ciclo del main
 std::atomic<bool> keep_running{true};

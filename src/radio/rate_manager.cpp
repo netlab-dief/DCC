@@ -1,5 +1,5 @@
-#include "console_log.h"
-#include "rate_manager.h"
+#include "common/console_log.h"
+#include "radio/rate_manager.h"
 #include <iostream>
 #include <cstdlib> // Necessario per std::system
 #include <sstream>

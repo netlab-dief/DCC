@@ -1,6 +1,6 @@
 #include "cam/cam_message.h"
 #include "cam/cam_sender.h"
-#include "dcc_net.h"
+#include "net/dcc_net.h"
 extern "C" {
 #include "CAM.h"
 #include "per_decoder.h"

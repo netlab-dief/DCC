@@ -1,5 +1,5 @@
-#include "dcc_adaptive.h"
-#include "airtime_gate.h"
+#include "dcc/dcc_adaptive.h"
+#include "dcc/airtime_gate.h"
 
 #include <cmath>
 #include <cstdlib>
