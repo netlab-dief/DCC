@@ -22,7 +22,9 @@ struct Options {
 class Sender {
 public:
     Sender(AirtimeGate& gate, std::string interface, Options options,
-           std::function<int()> dcc_interval = {}, std::function<int()> bitrate = {});
+           std::function<int()> dcc_interval = {}, std::function<int()> bitrate = {},
+           std::function<void(std::vector<std::uint8_t>&, const std::function<void()>&)> dispatch = {},
+           std::function<bool()> network_ready = {});
     ~Sender();
     void stop();
     TelemetrySnapshot telemetry() const { return telemetry_.snapshot(); }
@@ -43,6 +45,8 @@ private:
     Options options_;
     std::function<int()> dcc_interval_;
     std::function<int()> bitrate_;
+    std::function<void(std::vector<std::uint8_t>&, const std::function<void()>&)> dispatch_;
+    std::function<bool()> network_ready_;
     std::atomic<bool> stopping_{false};
     std::mutex mutex_;
     std::exception_ptr failure_;

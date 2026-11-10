@@ -16,3 +16,7 @@ tests/test_console_log
 
 cam_telemetry_log.csv
 cam_telemetry_estimated_log.csv
+.DS_Store
+
+tests/test_dcc_net
+dcc_net_telemetry_log.csv

@@ -1,7 +1,7 @@
 # DCC architecture
 
 This document describes the current implementation. For commands and defaults,
-see [README.md](README.md) and [GUIDA_USO.md](GUIDA_USO.md). CAM generation and
+see [README.md](README.md) and the [usage guide](USAGE.md). CAM generation and
 airtime estimation are documented in [cam/README.md](cam/README.md).
 
 ## Data flow
@@ -10,6 +10,10 @@ airtime estimation are documented in [cam/README.md](cam/README.md).
 flowchart LR
     Survey["nl80211 survey / fake CBR file"] --> Sampler["CbrSampler: 100 ms ticks"]
     Sampler --> Controller["Reactive state machine / adaptive delta controller"]
+    Sampler --> NET["Optional --dcc-net: 100 ms global CBR"]
+    RX["ITS-G5 monitor: SHB neighbours"] --> NET
+    NET --> Controller
+    NET --> TX
     Controller --> RadioSettings["TX power and bitrate requests"]
     Controller --> Gate["Shared AirtimeGate"]
     Controller --> Advisory["UDP 5555: advisory notification"]
@@ -37,14 +41,17 @@ and controlled transmitter.
 | `CBRReader.cpp/.h` | Synchronously query active-channel survey counters through nl80211 |
 | `cbr_sampler.cpp/.h` | Acquire independently of control, timestamp/validate observations and publish a bounded queue |
 | `dcc_state_machine.cpp/.h` | Five reactive states, adjacent transitions and asymmetric persistence |
+| `dcc_net.cpp/.h` | Encode/parse DCC-MCO, maintain expiring LocTEX observations and publish global CBR snapshots |
+| `gn_receiver.cpp/.h` | Optional Linux monitor receiver and random-phase 100 ms NET trigger; validate same PHY |
 | `dcc_adaptive.h` | Filter CBR and update the adaptive delta budget |
-| `TxPowerManager.cpp/.h` | Request fixed TX power through `NL80211_CMD_SET_WIPHY` |
+| `TxPowerManager.cpp/.h` | Request fixed TX power through `NL80211_CMD_SET_WIPHY`; read configured power for DCC_NET |
 | `rate_manager.cpp/.h` | Request legacy bitrate masks through `NL80211_CMD_SET_TX_BITRATE_MASK` |
-| `airtime_gate.cpp/.h` | Synchronize admission, reserve one packet and account completion reports |
+| `airtime_gate.cpp/.h` | Synchronize admission, reserve one packet and account estimates or completion reports |
 | `gate_server.cpp/.h` | Serve external gate clients over loopback UDP 5556 |
 | `airtime_client.py` | External client requiring a real send-and-wait completion callback |
 | `cam/cam_timing.h` | Generation bounds, movement triggers, N_GenCam and optional forced 100 ms policy |
 | `cam/cam_generation.h` | Construct CAMs independently of TX; maintain pending slot, source validity, history and expiry |
+| `cam/airtime_estimator.h` | Estimate full-frame broadcast OFDM airtime using the selected nominal legacy rate |
 | `cam/cam_message.cpp/.h` | Parse/check RMC, encode CAM UPER, serialize radiotap/802.11/GN/BTP frames |
 | `cam/cam_telemetry.h` | Thread-safe lifecycle counters, TX timing snapshots and append-only CAM CSV with interval TX rate |
 | `cam/cam_sender.cpp/.h` | Run producer and transmitter, inject on the second interface and account bitrate-based airtime estimates |
@@ -60,7 +67,7 @@ is no longer needed to build DCC.
 ## Threads and ownership
 
 `DccManager` owns the CBR sampler, controller worker and UDP gate service. With
-CAM enabled, `cam::Sender` also owns a generation worker, which runs a separate
+CAM enabled, `cam::Sender` also owns a generation worker and a separate
 transmitter thread. The main thread reads monitoring values and propagates sender
 failures via `check_cam()`.
 
@@ -93,12 +100,37 @@ The CBR reader uses 80 ms Netlink I/O timeouts; compound operations can take lon
 Reactive initialization selects the state matching the first valid CBR. Later
 transitions move one state at a time after 1 second of high CBR or 5 seconds of
 low CBR. Configured gate minima are 50/100/200/400/1000 ms and requested bitrates
-are 6/12/18/24/24 Mb/s. See the usage guide for thresholds and power levels.
+are 6/12/18/24/24 Mb/s. See the [controller reference](USAGE.md#controllers) for thresholds and power levels.
 
 The adaptive controller starts with filtered CBR 0 and delta 0.0006. It updates
 on consecutive 100 ms pairs ending at UTC 200 ms boundaries, using alpha 0.016,
 beta 0.0012, target 0.68, delta range 0.0006–0.03 and bounded offsets. Power and
 bitrate selection are additional project-specific policies.
+
+## Optional DCC_NET
+
+`--dcc-net` creates one additional worker for monitor receive and periodic
+aggregation. With the flag absent, no GN receiver runs and controllers still
+consume the original local sampler queue. With it, `wait_control()` consumes
+each coherent NET snapshot once; snapshot UTC slots retain the adaptive
+controller's existing pairing. NET uses a random initial phase and monotonic
+expiry, independently of UTC-aligned survey acquisition.
+
+`dccnet::State` protects its table/snapshot with one mutex and wakes consumers
+through a condition variable. Local CBR remains separate from global CBR.
+Missing or nonconsecutive local input invalidates NET control; startup/recovery
+requires a preceding valid trigger. Power configuration/readback and the final
+DCC-MCO patch/enqueue share a different mutex. No sampler or NET lock is held
+through Netlink I/O or driver enqueue. The transmit callback updates the selected
+frame immediately before injection; it does not change frame length/airtime.
+
+The optional NET CSV uses a separate schema and filename, recreated per NET
+session. Receiver and TX-power failures propagate through `check_cam()` even
+without a CAM sender. Stop wakes snapshot consumers, joins the monitor worker
+and closes its socket. The receiver is bound to one fixed ITS-G5 PHY/channel;
+its per-address table is the DCC location-table extension, not a full GN router.
+See [DCC_NET.md](DCC_NET.md) for equations, boundary conventions, parser coverage,
+EIRP assumptions and interoperability limits.
 
 ## Generation and transmission are separate
 
@@ -107,7 +139,7 @@ against the last successful driver enqueue, a generation timer initially at 1000
 N_GenCam=3 timed follow-ups after a motion trigger. `--cam-force-100ms` selects a
 fixed 100 ms generation policy while keeping radio admission and source validity.
 The producer continues checking while the transmitter waits for admission or
-completion. Only the newest unsent CAM is retained.
+the send callback. Only the newest unsent CAM is retained.
 
 Packets include mandatory containers and scheduled low-frequency data. RMC UTC
 provides the reference-position timestamp; the generation wall clock supplies
@@ -127,7 +159,7 @@ selected. These checks do not measure kernel/driver queueing time.
 sender snapshots the manager's current legacy bitrate, inserts it in radiotap
 RATE, and calculates an OFDM airtime estimate from the same packet. The estimate
 excludes radiotap, includes the FCS and padding, and uses conservative 10 MHz
-timings with Linux's nominal legacy rate table. See `cam/README.md` for the
+timings with Linux's nominal legacy rate table. See the [CAM guide](cam/README.md#estimated-airtime) for the
 formula and the 10/20 MHz interpretation.
 
 After successful enqueue, `ACCOUNT` charges that estimate and releases the
@@ -148,14 +180,17 @@ unknown retries, delivery or hardware completion.
 ## Lifecycle and validation
 
 The manager starts acquisition and control before enabling an optional CAM sender.
-Shutdown joins the CAM workers before stopping acquisition, disabling the gate,
-joining the controller and stopping the UDP service. There is no external completion wait. Controller telemetry records requested settings. CAM telemetry is appended to
+Shutdown first joins the CAM workers, then disables admission, stops the NET
+receiver and sampler, joins the controller and stops the UDP service. There is
+no external completion wait. Controller telemetry records requested settings.
+CAM telemetry is appended to
 `cam_telemetry_estimated_log.csv`, counts successful driver enqueues and estimated
 accounting, and computes submission Hz. It does not claim hardware confirmation;
 the separate filename preserves previous measured-schema logs.
 
-`make test` runs reactive, adaptive/gate, CBR acquisition, CAM and Python tests.
+`make test` runs reactive, adaptive/gate, CBR acquisition, CAM, DCC_NET and Python tests.
 The CAM suite includes boundary thresholds, angle wrap, missing data, N_GenCam,
 forced mode, low-frequency encoding, pending-slot replacement, expiry and
 concurrent generation during a blocked send callback. Linux radio tests
-are still needed to validate actual injection, queue mapping, bitrate and the accuracy of estimated airtime.
+are still needed to validate actual injection, queue mapping, bitrate and the
+accuracy of estimated airtime.

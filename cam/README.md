@@ -1,22 +1,17 @@
-# Generatore CAM integrato
+# Integrated CAM generator
 
-[Panoramica del progetto](../README.md) · [Guida d'uso](../GUIDA_USO.md) ·
-[Architettura](../CODEBASE_ANALYSIS.md)
+[Overview](../README.md) · [Usage](../USAGE.md) ·
+[Architecture](../CODEBASE_ANALYSIS.md) · [DCC_NET](../DCC_NET.md)
 
-`UtilsEncode/` e `Asn1_schemas/` provengono da `ETSI_stack/cam_c++`.
-Il costruttore CAM è in `UtilsEncode/utils.c`, con gestione degli errori di
-allocazione e codifica. `cam_message.cpp` sostituisce
-il passaggio binario → esadecimale → binario e il payload fisso di 50 byte.
-I valori dimostrativi del messaggio originale relativi a dimensioni veicolo,
-quota, accelerazioni, curvatura, yaw rate e confidenze sono impostati come
-indisponibili; i campi opzionali privi di sensore sono omessi. La sorgente RMC
-fornisce posizione, velocità e direzione, senza confidenze di misura.
+The integrated sender constructs CAMs, encapsulates them in GeoNetworking SHB
+frames and injects them through the second interface passed to `dcc`. It uses
+the shared DCC airtime gate directly. No external driver bridge or UDP feedback
+service is required.
 
-## Avvio su Linux
+## Quick start
 
-Compilare con `make` dalla cartella principale. Servono le dipendenze del DCC,
-permessi per i socket raw e un'interfaccia monitor configurata per l'iniezione.
-La seconda interfaccia passata al programma viene usata per trasmettere i CAM.
+Build with `make` in the repository root. Linux, raw-socket privileges and a
+monitor interface configured for radiotap injection are required.
 
 ```bash
 sudo ./dcc wlan0 wlan1 --cam-static
@@ -24,214 +19,240 @@ sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0
 sudo ./dcc wlan0 wlan1 --limeric --cam-static --cam-station-id 4316
 ```
 
-La MAC viene letta dall'interfaccia. La modalità statica usa 44.6292708 N,
-10.9479523 E, velocità zero e direzione indisponibile. La modalità GPS configura
-la seriale a 9600 baud, ricompone righe parziali, verifica checksum e fix A di
-GPRMC/GNRMC. Non invia con fix invalido o più vecchio di due secondi. Le
-coordinate sono in 10⁻⁷ gradi, la velocità in cm/s e la direzione in 0.1 gradi.
-Il tempo CAM GPS deriva da data e ora UTC del fix RMC rispetto al 2004, modulo
-65536 ms. La data viene validata, compresi gli anni bisestili. Fix ripetuti o
-fuori ordine non rinnovano la validità della sorgente; quelli più vecchi o più
-avanti dell'orologio della macchina di oltre due secondi non generano messaggi.
-La modalità statica e il timestamp GeoNetworking usano l'orologio UTC del
-sistema, che deve essere sincronizzato.
+Select one source. Station ID defaults to `4316`, QoS priority to `3`, and normal
+vehicle generation is enabled unless `--cam-force-100ms` is supplied. See the
+[option reference](../USAGE.md#command-line-reference) for validation and defaults.
 
-Il frame contiene radiotap, QoS 802.11 broadcast, LLC/SNAP, GeoNetworking SHB,
-BTP-B porta 2001 e l'intero payload CAM UPER. I campi di rete sono serializzati
-esplicitamente e la lunghezza GN include il BTP. La scelta del bitrate resta
-affidata alla configurazione radio del DCC; verificare sul driver che tale
-configurazione sia effettivamente rispettata per i frame iniettati.
+## Source data and timestamps
 
-## Priorità CAM e code EDCA
-
-Il flag opzionale `--cam-priority <0-7>` imposta la user priority nel campo TID
-del QoS Control 802.11. Si applica sia alla modalità statica sia a quella GPS:
-
-```bash
-sudo ./dcc wlan0 wlan1 --cam-static --cam-priority 6
-sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0 --cam-priority 4
-```
-
-| Priorità / TID | Categoria EDCA |
+| Source | Behaviour |
 | --- | --- |
-| 0, 3 | AC_BE — Best Effort |
-| 1, 2 | AC_BK — Background |
-| 4, 5 | AC_VI — Video |
-| 6, 7 | AC_VO — Voice |
+| Static | Position 44.6292708° N, 10.9479523° E; speed zero; heading unavailable |
+| GPS | Serial at 9600 baud; partial-line assembly; checksummed GPRMC/GNRMC with valid `A` fix |
 
-Senza il flag viene usato il valore CAM predefinito: **TID 3, AC_BE**, con classe
-GeoNetworking **TC2**. La corrispondenza TC2 → UP3 → AC_BE è definita nella
-tabella 4 di [ETSI TS 102 636-4-2 V1.4.1](https://www.etsi.org/deliver/etsi_ts/102600_102699/1026360402/01.04.01_60/ts_1026360402v010401p.pdf).
-Il profilo DP2 per CAM è descritto anche nell'annesso C.2 di
-[ETSI TS 102 724 V1.1.1](https://www.etsi.org/deliver/etsi_ts/102700_102799/102724/01.01.01_60/ts_102724v010101p.pdf).
-Il flag modifica il TID e la categoria EDCA; il messaggio rimane CAM con TC2.
-Valori fuori da 0–7,
-negativi, non numerici o mancanti vengono rifiutati. All'avvio il sender stampa
-la priorità e la categoria selezionate.
+GPS mode stops producing usable messages when the fix is invalid or older than
+two seconds. Duplicate or out-of-order fixes do not extend source validity.
+Fixes more than two seconds behind or ahead of host UTC are rejected for
+message generation. Date validation includes leap years. Synchronize the host
+UTC clock before use.
 
-Per i frame QoS iniettati tramite radiotap, mac80211 legge il TID per scegliere
-la coda: la mappatura è quella di `ieee802_1d_to_ac` nel
-[codice Linux mac80211](https://github.com/torvalds/linux/blob/master/net/mac80211/wme.c).
-Non viene usato il numero della coda hardware come TID. L'effettivo uso delle
-quattro categorie richiede il supporto del driver e della radio; con meno di
-quattro code mac80211 ricade sulla coda disponibile. Il flag seleziona la
-categoria, senza modificare AIFS/CW/TXOP o il controllo di ammissione DCC.
+CAM reference-position time comes from RMC date/time relative to the 2004 epoch,
+modulo 65536 ms. Static CAMs and GeoNetworking timestamps use system UTC.
+Coordinates use 10⁻⁷ degrees, speed uses cm/s and heading uses 0.1° units.
+RMC provides position, speed and heading without measurement confidence data.
 
-## Invio autonomo e stima dell'airtime
+The station is an ordinary `passengerCar`, with no special-vehicle container.
+Missing vehicle dimensions, altitude, acceleration, curvature, yaw rate and
+confidence values are encoded as unavailable; optional fields without sensors
+are omitted. There is no CAN data source or hardware airtime sensor.
 
-È sufficiente avviare il processo `dcc`: il generatore costruisce i CAM e il
-sender li inietta sulla seconda interfaccia con `AF_PACKET/SOCK_RAW`. Non serve
-un bridge esterno e non vengono inviati datagrammi sulla porta 5557.
+## Encoding and frame format
 
-Per ogni pacchetto il sender legge il bitrate legacy corrente del manager DCC,
-lo inserisce nel campo [radiotap RATE](https://radiotap.org/fields/Rate.html)
-e stima l'airtime della stessa versione del frame. Il bitrate del pacchetto
-resta fissato durante la sua ammissione: un aggiornamento concorrente del DCC
-vale per la selezione successiva, senza cambiare retroattivamente la stima.
+`UtilsEncode/` and `Asn1_schemas/` were imported from `ETSI_stack/cam_c++` and are
+bundled in this repository. `UtilsEncode/utils.c` constructs CAMs and handles
+allocation/encoding errors. `cam_message.cpp` uses the full encoded payload
+directly, replacing the original binary/hexadecimal round trip and fixed
+50-byte payload.
 
-La lunghezza comprende 802.11 QoS, LLC/SNAP, GeoNetworking, BTP e CAM, con tutti
-i contenitori effettivamente presenti; il modello aggiunge 4 byte FCS ed esclude
-l'header radiotap. Per OFDM considera SERVICE, TAIL, arrotondamento al numero
-intero di simboli, preambolo e SIGNAL:
+Frames contain:
 
 ```text
-L = lunghezza del frame senza radiotap, in byte
-R = bitrate legacy nominale del DCC/Netlink, in Mb/s
-N_DBPS = 4 × R
-T_stimato_10MHz = 40 + 8 × ceil((16 + 8 × (L + 4) + 6) / N_DBPS)  [µs]
+radiotap → broadcast QoS 802.11 → LLC/SNAP → GeoNetworking SHB
+         → BTP-B destination port 2001 → complete CAM UPER payload
 ```
 
-Il DCC usa i valori nominali della tabella legacy Linux (6, 12, 18, 24 Mb/s).
-A 10 MHz il bitrate fisico della stessa modulazione/codifica è metà del valore
-nominale a 20 MHz. Il modello usa i tempi a **10 MHz** (simboli da 8 µs,
-preambolo + SIGNAL da 40 µs); su una radio a 20 MHz sovrastima l'airtime di un
-fattore due. Non rileva automaticamente la larghezza del canale. I riferimenti
-PHY sono le tabelle C.1 e C.2 di
-[ETSI EN 302 663 V1.3.1](https://www.etsi.org/deliver/etsi_en/302600_302699/302663/01.03.01_60/en_302663v010301p.pdf).
+The interface supplies the MAC address. Network fields are serialized explicitly;
+GN payload length includes BTP. CAM and GN headings are encoded separately:
+CAM retains `3601` for unavailable heading, while GN uses zero as a fallback.
+GN heading is also zero for a stationary station. Available 360° headings are
+normalized to 0°. For a moving source with unknown heading, GN zero is a
+fallback rather than a northbound measurement; CAM still signals unavailable.
 
-La stima riguarda un singolo invio broadcast senza ACK. Non include backoff,
-attesa nel driver o eventuali tentativi aggiuntivi non osservati; richiede che
-il driver rispetti il RATE legacy richiesto. È una stima, non una misura PHY.
+## Generation policy
 
-Prima di inviare si chiede `ADMIT` al gate condiviso. Dopo un `sendto()` completo,
-il sender invia internamente `ACCOUNT <id> <airtime_stimato_us>` allo stesso gate:
-la riserva viene chiusa e il budget viene addebitato sulla stima, senza attendere
-riscontri hardware. Il gate applica ancora intervallo minimo e budget δ.
-Un invio fallito o parziale interrompe il sender senza inventare un esito
-positivo; il gate conserva la riserva incerta. `REPORT` resta disponibile per
-client esterni che dispongano davvero di misure di completamento PHY.
+Normal generation implements the vehicle timing policy described in
+[ETSI EN 302 637-2 V1.4.1, §6.1.3](https://www.etsi.org/deliver/etsi_en/302600_302699/30263702/01.04.01_60/en_30263702v010401p.pdf).
+The producer checks conditions every nominal 10 ms, independently of the
+transmitter's gate wait:
 
-## Generazione CAM per veicolo
+```text
+T_GenCam_DCC = clamp(current DCC interval, 100 ms, 1000 ms)
+```
 
-La politica di generazione segue il §6.1.3 di
-[ETSI EN 302 637-2 V1.4.1](https://www.etsi.org/deliver/etsi_en/302600_302699/30263702/01.04.01_60/en_30263702v010401p.pdf):
-`T_GenCam_DCC = clamp(intervallo_DCC, 100 ms, 1000 ms)`. Se il valore non è
-disponibile si usano 100 ms. Il sender legge il valore aggiornato dal manager
-DCC sia in modalità reattiva sia adattativa e conta il tempo dall'inizio della
-generazione del CAM precedente, senza aggiungere un ulteriore intervallo
-a partire dal ritorno della chiamata di invio. Il thread di generazione valuta le condizioni su
-tick da 10 ms, anche durante l'attesa del gate, purché venga
-regolarmente eseguito dal sistema.
+If the interval is unavailable, the input defaults to 100 ms. The first CAM is
+generated as soon as source data become valid. Subsequent generations respect
+`T_GenCam_DCC` and use either a motion trigger or the generation timer:
 
-Il primo CAM è generato appena la sorgente è valida. I successivi rispettano
-sempre T_GenCam_DCC e sono generati per una delle seguenti condizioni:
+- Motion triggers when distance changes by more than 4 m, heading by more than
+  4°, or speed by more than 0.5 m/s relative to the last successful driver enqueue.
+  Heading uses the shortest angular difference across 0°/360°. Unavailable
+  heading/speed does not trigger its corresponding condition.
+- `T_GenCam` starts at 1000 ms. A motion trigger sets it to the elapsed interval
+  since the previous generation. That interval is retained for `N_GenCam = 3`
+  timed follow-ups, then returns to 1000 ms. A new motion trigger resets the count.
 
-- Variazione rispetto all'ultimo CAM accodato con successo al driver:
-  distanza **oltre 4 m**, direzione **oltre 4°**, oppure velocità **oltre 0,5 m/s**.
-  La direzione usa la distanza angolare minima attraverso 0°/360°; i valori
-  indisponibili non attivano i trigger di velocità/direzione.
-- Scadenza di T_GenCam, inizialmente **1000 ms**. Un trigger di movimento imposta
-  T_GenCam all'intervallo effettivo dall'ultima generazione. Questo intervallo
-  viene mantenuto per **N_GenCam = 3** CAM temporizzati consecutivi, poi torna
-  a 1000 ms. Un nuovo trigger di movimento azzera il conteggio.
+Elapsed generation time is measured from the start of the previous generation,
+without adding another interval after send returns. A stationary source normally
+generates at 1 Hz; motion may raise this to 10 Hz within DCC and fix availability
+limits. Static mode behaves as a stationary vehicle and supplies no simulated
+motion triggers.
 
-Da fermo il comportamento è quindi **1 Hz**; con variazioni di movimento può
-arrivare a **10 Hz**, nei limiti del DCC e della frequenza dei fix disponibili.
-La modalità statica segue la stessa politica di un veicolo fermo e non simula
-trigger di movimento.
-
-### Intervalli DCC in modalità normale
-
-La tabella indica il limite inferiore di generazione, non un periodo fisso:
-con sorgente ferma il timer normale resta a 1000 ms.
-
-| Stato reattivo | Minimo DCC fornito | Minimo di generazione CAM |
+| Reactive state | DCC gate minimum | Normal CAM generation lower bound |
 | --- | --- | --- |
-| RELAXED | 50 ms | 100 ms |
-| ACTIVE_1 | 100 ms | 100 ms |
-| ACTIVE_2 | 200 ms | 200 ms |
-| ACTIVE_3 | 400 ms | 400 ms |
-| RESTRICTIVE | 1000 ms | 1000 ms |
+| `RELAXED` | 50 ms | 100 ms |
+| `ACTIVE_1` | 100 ms | 100 ms |
+| `ACTIVE_2` | 200 ms | 200 ms |
+| `ACTIVE_3` | 400 ms | 400 ms |
+| `RESTRICTIVE` | 1000 ms | 1000 ms |
 
-### Trigger forzato ogni 100 ms
+These are lower bounds, not fixed generation periods. The stationary timer
+remains 1000 ms in every state.
 
-Con `--cam-force-100ms` la generazione avviene ogni **100 ms nominali**, anche
-da fermo, indipendentemente dai trigger dinamici, da N_GenCam e dal valore di
-T_GenCam_DCC. Il primo CAM è immediato appena sono disponibili dati validi.
+### Forced 100 ms generation
 
 ```bash
 sudo ./dcc wlan0 wlan1 --cam-static --cam-force-100ms
 sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0 --cam-force-100ms
 ```
 
-Con questo flag il periodo nominale di generazione è 100 ms in tutti gli stati
-DCC, compreso RESTRICTIVE. Il flag richiede `--cam-static` o `--cam-gps`.
-Senza flag rimane attiva la politica ETSI descritta sopra. Questa opzione forza la **generazione**: il gate
-DCC continua a decidere quando consentire l'invio radio, quindi la frequenza
-effettiva di trasmissione può essere inferiore a 10 Hz. Restano attivi i
-controlli di validità GPS, la scadenza dei messaggi, lo slot che conserva solo
-il CAM più recente e il contenitore low frequency con scadenza a 500 ms.
-Un ritardo del processo non produce una raffica di CAM per recuperare i tick
-persi; la generazione successiva dista almeno 100 ms da quella effettiva.
+`--cam-force-100ms` requires a CAM source and selects nominal 100 ms generation
+in every state, including `RESTRICTIVE`. The first CAM is immediate once data
+are valid. This overrides motion triggers, `N_GenCam` and `T_GenCam_DCC` for
+generation; it retains source validity, expiry, the latest-message slot,
+low-frequency scheduling and radio admission.
 
-### Ammissione e validità dei messaggi
+Actual enqueue frequency can remain below 10 Hz. Delays do not cause catch-up
+bursts: the next generation is at least 100 ms after the actual previous one.
 
-Il limite di 1000 ms si applica al parametro di generazione, non forza l'apertura
-del gate. Il gate conserva il proprio addebito basato sull'airtime e richiede
-misure CBR valide: sotto congestione o in assenza di riscontri, gli invii effettivi
-possono essere più distanziati. Generazione e trasmissione sono separate: il CAM
-viene costruito quando scatta il trigger; lo slot di attesa conserva solo il
-più recente. Un pacchetto più vecchio di 1000 ms o con sorgente scaduta non è
-selezionato per la trasmissione. Una costruzione che impiega almeno 50 ms viene
-scartata senza consumare il trigger, per ritentare con dati freschi al controllo
-successivo. Un nuovo CAM sostituisce quello ancora in attesa, senza accumulare
-una raffica da inviare quando il gate riapre.
-La lifetime GeoNetworking iniziale è 1000 ms (§5.3.4.1, tabella 2) e viene
-ridotta prima dell'invio per sottrarre l'attesa locale, con risoluzione di 50 ms;
-un pacchetto con meno di 50 ms residui viene scartato.
+## Pending messages, lifetime and containers
 
-Il contenitore low frequency è incluso nel primo CAM e nel primo CAM generato
-almeno **500 ms** dopo l'ultimo che lo conteneva. Non causa un invio autonomo a
-500 ms. Se il CAM che lo portava è sostituito mentre attende la radio, il
-contenitore è conservato nel sostituto. Contiene ruolo veicolo ordinario, luci
-indisponibili (bit a zero) e lo storico dei fix disponibili, fino a 23 punti:
-ordine dal più recente, offset rispetto al punto precedente e tempo in unità
-da 10 ms. Lo storico è vuoto all'avvio e viene interrotto da un gap non
-rappresentabile; risoluzione e qualità dipendono dai fix forniti. Questo
-storico dei fix non implementa la selezione/compressione del percorso SAE J2735.
+Generation and transmission are separate. One pending slot holds the newest
+CAM; a new message replaces an older waiting message. The producer can continue
+while the transmitter waits. Completion of an older selected version cannot
+clear a newer pending version.
 
-La configurazione corrente è un **veicolo passengerCar con ruolo ordinario**;
-non richiede il contenitore special vehicle. Il codice non rappresenta una
-certificazione dello stack o dell'hardware e non include una sorgente CAN,
-le confidenze GNSS o un misuratore hardware dell’airtime.
-Le notifiche UDP storiche sulla porta 5555 restano disponibili ai processi esterni.
+A construction taking at least 50 ms is discarded without consuming the trigger,
+allowing a fresh attempt at the next check. A message is not selected after
+1000 ms or after source expiry. Initial GN lifetime is 1000 ms; before enqueue,
+local queue age is subtracted in 50 ms units. Messages with less than 50 ms
+remaining are dropped. These checks do not measure kernel/driver queue time.
+The 1000 ms generation bound does not force the gate to open or erase airtime
+debt.
 
-## Telemetria
+The low-frequency container is included in the first CAM and the first generation
+at least 500 ms after its previous inclusion. It does not trigger an independent
+send at 500 ms. If its pending CAM is replaced, the replacement retains the
+container. It contains ordinary vehicle role, unavailable exterior lights
+(zero bits), and available fix history with up to 23 points.
 
-Con CAM attivi, `[CAM MONITOR]` mostra generati, sostituiti, scaduti,
-invalidati, accodati, pacchetti contabilizzati con stima, errori e frequenza
-**degli invii accettati dal driver**. `cam_telemetry_estimated_log.csv` salva
-questi contatori, i tempi medi di coda/gate/invio e l'airtime stimato cumulativo.
-Non vengono mostrate TX confermate dal driver: `Submitted_Hz` conta l'incremento
-di `Submitted`, non ricezioni o completamenti PHY. Il file nuovo evita di
-mescolare questi dati con il precedente schema di `cam_telemetry_log.csv`.
-Vedi [colonne e definizioni](../GUIDA_USO.md#telemetria-cam).
+History is newest-first, uses offsets from the preceding point and times in
+10 ms units, starts empty, and breaks across an unrepresentable gap. Its quality
+and resolution depend on the source fixes. This is fix history; SAE J2735 path
+selection/compression is not implemented.
 
-## Verifica
+## QoS priority and EDCA
 
-`make test` comprende parsing GPS, codifica/decodifica UPER, struttura dei frame,
-ammissione condivisa, soglie dei trigger, N_GenCam, ritorno a 1 Hz, contenitore
-LF e path history, modalità forzata a 100 ms, generazione durante un invio bloccato, sostituzione/scadenza
-dei CAM in attesa, contabilizzazione della stima e blocco dopo TX incerta. Questi test
-non richiedono radio. La compilazione dell'applicazione completa e l'iniezione
-richiedono Linux e vanno verificate con il driver e la radio di destinazione.
+`--cam-priority <0-7>` sets the user priority in the 802.11 QoS TID for either
+source mode:
+
+```bash
+sudo ./dcc wlan0 wlan1 --cam-static --cam-priority 6
+sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0 --cam-priority 4
+```
+
+| User priority / TID | EDCA category |
+| --- | --- |
+| 0, 3 | AC_BE — Best Effort |
+| 1, 2 | AC_BK — Background |
+| 4, 5 | AC_VI — Video |
+| 6, 7 | AC_VO — Voice |
+
+The default is **TID 3 / AC_BE**, with **GeoNetworking TC2**. The TC2 → UP3 → AC_BE
+mapping is documented in
+[ETSI TS 102 636-4-2 V1.4.1, table 4](https://www.etsi.org/deliver/etsi_ts/102600_102699/1026360402/01.04.01_60/ts_1026360402v010401p.pdf);
+CAM DP2 is also discussed in
+[ETSI TS 102 724 V1.1.1, Annex C.2](https://www.etsi.org/deliver/etsi_ts/102700_102799/102724/01.01.01_60/ts_102724v010101p.pdf).
+Changing TID retains the CAM's TC2. Missing, negative, nonnumeric or out-of-range
+values are rejected. Startup reports the selected priority/category.
+
+The injected TID is a user priority, not a hardware queue number. mac80211 uses
+its priority/category mapping for QoS frames; actual queue behaviour depends on
+the driver and available queues. This flag does not configure AIFS, contention
+windows or TXOP. EDCA priority is separate from DCC worker scheduling and from
+airtime admission.
+
+## Estimated airtime
+
+For each selected packet, the sender snapshots the manager's current nominal
+legacy bitrate and writes it into [radiotap RATE](https://radiotap.org/fields/Rate.html).
+That packet's rate and airtime estimate remain fixed through admission; a
+concurrent DCC update affects the next selection.
+
+The model counts the complete MAC frame: QoS 802.11, LLC/SNAP, GN, BTP and all
+present CAM containers. It excludes radiotap, adds four FCS bytes, and includes
+OFDM SERVICE, TAIL, whole-symbol rounding, preamble and SIGNAL:
+
+```text
+L = MAC frame length excluding radiotap, in bytes
+R = nominal DCC/Linux legacy rate, in Mb/s
+N_DBPS = 4 × R
+estimated_airtime_10MHz = 40 + 8 × ceil((16 + 8 × (L + 4) + 6) / N_DBPS)  [µs]
+```
+
+The Linux nominal rates used by DCC are 6, 12, 18 and 24 Mb/s. At 10 MHz, the
+physical rate for the same modulation/coding is half its nominal 20 MHz value.
+The model uses **10 MHz timings**: 8 µs symbols and 40 µs preamble/SIGNAL.
+On a 20 MHz radio it overestimates airtime by a factor of two. It does not detect
+channel width automatically. The PHY reference is
+[ETSI EN 302 663 V1.3.1, tables C.1–C.2](https://www.etsi.org/deliver/etsi_en/302600_302699/302663/01.03.01_60/en_302663v010301p.pdf).
+
+This estimates one broadcast transmission without ACK. It excludes backoff,
+driver waiting and unobserved extra attempts, and assumes the driver honors the
+requested RATE. Validate those assumptions on the intended radio.
+
+The sender obtains `ADMIT` from the shared gate, injects with
+`AF_PACKET/SOCK_RAW`, and calls `ACCOUNT` with estimated airtime after a complete
+successful `sendto()`. This closes the reservation without waiting for PHY
+feedback; it does not prove hardware completion or reception.
+
+Failed/partial sends stop the sender and retain the uncertain reservation.
+External transmitters with actual PHY measurements can use `REPORT` instead.
+See the [gate protocol](../USAGE.md#external-transmitters-and-gate-protocol) for
+pacing, retry and recovery semantics. Integrated CAMs require no service on
+port 5557; legacy advisory notifications on port 5555 remain available.
+
+## Optional DCC-MCO extension
+
+```bash
+sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
+sudo ./dcc wlan0 wlan1 --dcc-net --limeric --cam-gps /dev/ttyACM0
+```
+
+Without NET, the four SHB media-dependent bytes remain zero. With NET, the sender
+patches local CBR, one-hop CBR and configured EIRP after gate admission,
+immediately before enqueue. UPER payload, frame length and estimated airtime
+are unchanged. This feature works with either source, any priority and forced
+100 ms generation.
+
+The second interface also receives SHB. Both interfaces must share a PHY/channel,
+and configured TX power must be readable. The optional EIRP offset accounts for
+antenna gain minus cable loss; zero assumes 0 dBi and no loss. Controllers use
+global CBR. See [DCC_NET](../DCC_NET.md) for encoding, freshness and parser limits.
+
+## Telemetry and validation
+
+`[CAM MONITOR]` and `cam_telemetry_estimated_log.csv` report generation,
+replacement, expiry, invalidation, submission, estimated accounting, errors,
+enqueue frequency and mean timing. `Submitted_Hz` measures successful driver
+enqueues, rather than receptions or PHY completion. See the
+[CAM column definitions](../USAGE.md#cam-telemetry).
+
+`make test` covers RMC parsing, UPER round trips, frame structure, motion
+thresholds, angle wrap, unavailable data, `N_GenCam`, stationary timing,
+low-frequency/history encoding, forced generation, shared admission, pending
+replacement/expiry, generation during a blocked send, estimated accounting and
+uncertain-send failure. No radio is required for these tests.
+
+Validate full Linux builds, injection, queue mapping, bitrate application and
+airtime estimates against the intended driver and radio. The current
+implementation does not certify the complete ITS stack or hardware.

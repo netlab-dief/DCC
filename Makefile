@@ -20,7 +20,7 @@ OUTPUT_DIR = .
 C_SOURCES := $(wildcard $(C_DIR)/*.c)
 
 # C++ source files (AGGIUNTO dcc/utils.cpp alla lista)
-CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp gate_server.cpp cbr_sampler.cpp cam/cam_message.cpp cam/cam_sender.cpp
+CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp gate_server.cpp cbr_sampler.cpp dcc_net.cpp gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp
 
 # Object files
 C_OBJS := $(patsubst $(C_DIR)/%.c, $(C_DIR)/%.o, $(C_SOURCES))
@@ -49,24 +49,25 @@ $(TARGET): $(C_OBJS) $(CXX_OBJS)
 
 # Clean up object files and executable
 clean:
-	rm -f $(C_OBJS) $(CXX_OBJS) $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log
+	rm -f $(C_OBJS) $(CXX_OBJS) $(C_OBJS:.o=.d) $(CXX_OBJS:.o=.d) $(TARGET) tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log tests/test_dcc_net
 
 .PHONY: all clean test test-cpp test-python
 
 test: test-cpp test-python
 
-test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log
+test-cpp: tests/test_dcc_state_machine tests/test_dcc_control tests/test_cbr_sampler tests/test_cam tests/test_console_log tests/test_dcc_net
 	./tests/test_dcc_state_machine
 	./tests/test_dcc_control
 	./tests/test_cbr_sampler
 	./tests/test_cam
 	./tests/test_console_log
+	./tests/test_dcc_net
 
 tests/test_console_log: tests/test_console_log.cpp console_log.h
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_console_log.cpp -o $@
 
-tests/test_cam: tests/test_cam.cpp cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h cam/cam_telemetry.h cam/airtime_estimator.h console_log.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. -Icam/UtilsEncode tests/test_cam.cpp cam/cam_message.cpp cam/cam_sender.cpp airtime_gate.cpp $(C_OBJS) -o $@
+tests/test_cam: tests/test_cam.cpp dcc_net.cpp dcc_net.h cam/cam_message.cpp cam/cam_message.h cam/cam_sender.cpp cam/cam_sender.h cam/cam_timing.h cam/cam_generation.h cam/cam_telemetry.h cam/airtime_estimator.h console_log.h airtime_gate.cpp airtime_gate.h $(C_OBJS)
+	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. -Icam/UtilsEncode tests/test_cam.cpp dcc_net.cpp cam/cam_message.cpp cam/cam_sender.cpp airtime_gate.cpp $(C_OBJS) -o $@
 
 tests/test_dcc_state_machine: tests/test_dcc_state_machine.cpp dcc_state_machine.cpp dcc_state_machine.h
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -I. tests/test_dcc_state_machine.cpp dcc_state_machine.cpp -o $@
@@ -79,3 +80,7 @@ tests/test_dcc_control: tests/test_dcc_control.cpp dcc_adaptive.h airtime_gate.c
 
 tests/test_cbr_sampler: tests/test_cbr_sampler.cpp cbr_sampler.cpp cbr_sampler.h dcc_adaptive.h
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_cbr_sampler.cpp cbr_sampler.cpp -o $@
+
+
+tests/test_dcc_net: tests/test_dcc_net.cpp dcc_net.cpp dcc_net.h dcc_state_machine.cpp dcc_state_machine.h dcc_adaptive.h gn_receiver.cpp gn_receiver.h
+	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_dcc_net.cpp dcc_net.cpp dcc_state_machine.cpp gn_receiver.cpp -o $@

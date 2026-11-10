@@ -105,6 +105,19 @@ def metric(row, key, unit=''):
     return '--' if value is None else f'{value:g}{unit}'
 
 
+def net_lines(tail):
+    """DCC_NET has its own optional schema; legacy DCC logs remain readable."""
+    _, fresh = status(tail)
+    if not fresh:
+        return ('NET: nessun dato recente (opzionale: --dcc-net)', '')
+    row = tail.latest or {}
+    valid = 'valido' if row.get('Valid') == 'YES' else 'ingresso non valido'
+    return (
+        f"NET {valid} | locale {metric(row, 'Local_CBR_Percent', '%')} | 1 hop {metric(row, 'One_Hop_CBR_Percent', '%')}",
+        f"NET | 2 hop {metric(row, 'Two_Hop_CBR_Percent', '%')} | globale {metric(row, 'Global_CBR_Percent', '%')} | vicini {metric(row, 'Neighbors')}",
+    )
+
+
 def run_screen(screen, directory):
     import curses
     curses.curs_set(0)
@@ -117,6 +130,9 @@ def run_screen(screen, directory):
                   ['Timestamp', 'CBR_Percent', 'State_Mode', 'Interval_ms', 'Tx_Power_dBm', 'MCS_Netlink'])
     cam = CsvTail(directory / 'cam_telemetry_estimated_log.csv',
                   ['Session_Unix_ms', 'Timestamp_Unix_ms', 'Submitted', 'Submitted_Hz'])
+    net = CsvTail(directory / 'dcc_net_telemetry_log.csv',
+                  ['Timestamp', 'Valid', 'Local_CBR_Percent', 'One_Hop_CBR_Percent',
+                   'Two_Hop_CBR_Percent', 'Global_CBR_Percent', 'Neighbors'])
     history = deque(maxlen=1200)  # about two minutes of reactive DCC samples
     while True:
         previous_identity = dcc.identity
@@ -129,6 +145,7 @@ def run_screen(screen, directory):
             if cbr is not None and 0 <= cbr <= 100:
                 history.append((row['Timestamp'], cbr))
         cam.poll()
+        net.poll()
         screen.erase()
         height, width = screen.getmaxyx()
 
@@ -153,6 +170,9 @@ def run_screen(screen, directory):
             put(4, f"Stato / modalita: {data.get('State_Mode', '--')}    CBR: {metric(data, 'CBR_Percent', '%')}")
             put(5, f"Intervallo indicativo: {metric(data, 'Interval_ms', ' ms')}")
             put(6, f"Potenza richiesta: {metric(data, 'Tx_Power_dBm', ' dBm')}    Bitrate richiesto: {metric(data, 'MCS_Netlink', ' Mb/s')}")
+            net_first, net_second = net_lines(net)
+            put(7, net_first)
+            put(14, net_second)
             put(8, 'CBR 0-100% | ultimi campioni (sinistra -> destra)')
             samples = list(history)[-(width - 3):]
             for y in range(4):

@@ -187,7 +187,12 @@ std::vector<std::uint8_t> make_frame(const Position& p, std::uint32_t station_id
     be32(out, static_cast<std::uint32_t>(p.latitude));
     be32(out, static_cast<std::uint32_t>(p.longitude));
     be16(out, p.speed == 16383 ? 32767 : p.speed);
-    be16(out, p.heading);
+    // GN LPV has no CAM HeadingValue_unavailable (3601) sentinel.
+    // Use GN's zero fallback for unknown direction and for a stationary ITS-S
+    // (EN 302 636-4-1, 8.2.3); normalize CAM's 360 degrees to north (0).
+    // The CAM payload above retains the original HeadingValue.
+    const unsigned gn_heading = p.speed == 0 || p.heading == 3601 ? 0 : p.heading % 3600;
+    be16(out, gn_heading);
     out.insert(out.end(), {0, 0, 0, 0}); // SHB media dependent extension.
     be16(out, 2001); be16(out, 0); // CAM BTP destination port.
     out.insert(out.end(), payload.begin(), payload.end());
