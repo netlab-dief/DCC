@@ -5,7 +5,7 @@
 
 DCC controls application-level access to one ITS-G5 channel. It measures CBR,
 updates a reactive or adaptive controller, requests radio settings and exposes a
-shared per-packet airtime gate. Integrated CAM generation is optional.
+internal per-packet airtime gate. Integrated CAM generation is optional.
 
 ## Contents
 
@@ -17,7 +17,7 @@ shared per-packet airtime gate. Integrated CAM generation is optional.
 - [CBR acquisition and validity](#cbr-acquisition-and-validity)
 - [Telemetry](#telemetry)
 - [Terminal dashboard](#terminal-dashboard)
-- [External transmitters and gate protocol](#external-transmitters-and-gate-protocol)
+- [Internal CAM admission](#internal-cam-admission)
 - [Synthetic CBR](#synthetic-cbr)
 - [Troubleshooting](#troubleshooting)
 - [Tests and hardware validation](#tests-and-hardware-validation)
@@ -119,8 +119,8 @@ sudo ./dcc wlan0 wlan1
 sudo ./dcc wlan0 wlan1 --limeric
 ```
 
-Both modes start the shared gate at `127.0.0.1:5556`. No CAMs are generated unless
-a source is enabled. A bind failure on the gate port aborts startup.
+Both modes configure an internal gate for the integrated CAM sender. Select
+`--cam-static` or `--cam-gps <device>` to enable generation.
 
 ### Integrated CAM generation
 
@@ -174,7 +174,7 @@ continues to show local CBR. See [DCC_NET](DCC_NET.md) for aggregation and limit
 The main monitor prints once per second: local CBR in percent (`-1` when invalid
 or stale), reactive state or `DYNAMIC (LIMERIC)`, and `T_off` in milliseconds.
 `T_off` is a state minimum in reactive mode and an advisory interval in adaptive
-mode. Reactive transitions and significant adaptive notifications produce
+mode. Reactive transitions and significant adaptive log updates produce
 additional messages. With CAM enabled, `[CAM MONITOR]` reports lifecycle counters,
 driver enqueue frequency, timing and estimated accounting.
 
@@ -281,7 +281,7 @@ bitrate fields describe requests; they do not certify hardware application.
 | `Interval_ms` | Reactive gate minimum or adaptive advisory interval |
 | `Tx_Power_dBm` | Requested power in dBm |
 | `MCS_Netlink` | Requested legacy bitrate in Mb/s; the historical column name is retained |
-| `HW_Config_Changed` | `YES` on a reactive state change or significant adaptive notification; not hardware confirmation |
+| `HW_Config_Changed` | `YES` on a reactive state change or significant adaptive log update; not hardware confirmation |
 
 Move or rename this file between runs when separate logs are needed. It does not
 contain CAM transmission counts.
@@ -351,94 +351,38 @@ freshness, rather than gate or radio health. CAM counters belong to the latest
 logged session. Run on the same host because DCC timestamps use local time.
 Press `q`, Escape or Ctrl+C to close only the dashboard.
 
-## External transmitters and gate protocol
+## Internal CAM admission
 
-### Advisory notifications: UDP 5555
+The integrated generator and transmitter run inside DCC. The sender calls
+`AirtimeGate` directly; there is no external client, UDP gate server or advisory
+notification socket.
 
-DCC sends notifications to `127.0.0.1:5555`. Each payload is a native-byte-order
-`int32_t`:
-
-| Mode | Payload |
-| --- | --- |
-| Reactive | State: `RELAXED=1`, `ACTIVE_1=2`, `ACTIVE_2=3`, `ACTIVE_3=4`, `RESTRICTIVE=5` |
-| Adaptive | Advisory interval in milliseconds |
-
-These notifications authorize no packet transmission. An external process must
-listen to receive them; DCC continues if no listener exists. Integrated CAMs read
-the manager and gate directly.
-
-### Per-packet admission: UDP 5556
-
-Both controller modes serve the shared gate at `127.0.0.1:5556`. All producers on
-the controlled channel must cooperate; the gate cannot intercept bypass traffic
-or measure a transmitter's airtime autonomously. The integrated sender calls the
-same gate directly. A second DCC instance cannot bind the same UDP endpoint.
-
-The protocol is ASCII, with one message per datagram:
-
-| Request | Response | Meaning |
-| --- | --- | --- |
-| `ADMIT <id> <airtime_us>` | `GRANT <id>` | Reserve one packet and permit one send |
-| `ADMIT <id> <airtime_us>` | `WAIT <id> <microseconds>` | Wait and retry admission; do not send |
-| `ACCOUNT <id> <estimated_airtime_us>` | `DONE <id>` | Close the reservation and charge an enqueue using an estimate |
-| `REPORT <id> <actual_airtime_us>` | `DONE <id>` | Close the reservation after externally measured PHY completion |
-| Invalid request | `ERROR <reason>` | Do not send |
-
-IDs are positive 64-bit integers and must increase globally across admissions.
-The Python example uses `time.time_ns()`; concurrent clients must handle
-`stale_id` without sending. Airtime values are integer microseconds from 1 to
-1,000,000. Use a conservative bound for the complete packet based on frame length,
-PHY configuration or driver information.
-
-Request admission for every packet, send once after `GRANT`, then account for
-that reservation. Integrated CAMs use `ACCOUNT` with an estimate. A client with
-real PHY completion and airtime measurements can use `REPORT`. Successful
-`send()` alone does not provide those measurements.
-
-Only one reservation may be open. It never expires automatically: missing
-`ACCOUNT`/`REPORT` keeps admission closed. Duplicate `ADMIT` does not repeat a
-`GRANT`. Accounting for the most recently closed reservation can be repeated
-without charging twice. An admission timeout leaves an uncertain outcome;
-do not transmit after it. Stop and drain the transmitter and driver queues
-before restarting after an uncertain send.
-
-### Pacing and accounting
+Each selected CAM reserves a packet with `ADMIT`. The gate grants admission only
+when CBR is valid and the current airtime debt has elapsed. After a complete
+successful driver enqueue, `ACCOUNT` charges the packet's estimated airtime and
+closes the reservation. This accounting does not claim PHY completion or delivery.
 
 ```text
 next admission delay = max(mode minimum, charged airtime / delta)
 ```
 
-The delay starts at receipt of `ACCOUNT`/`REPORT`. Charged airtime is at least
-the original reservation: a larger report corrects underestimation, while a
-smaller report gives no credit back. The gate retains the most restrictive delta
-seen during the reservation, and controller updates preserve outstanding debt.
+The delay starts at accounting time. Charged airtime is at least the original
+reservation; a smaller value cannot refund it. The gate retains the most
+restrictive delta seen during the reservation, and controller updates preserve
+outstanding debt. Adaptive mode uses a 25 ms minimum; reactive mode uses its
+state minimum with delta `0.03`. Large packets can delay admission beyond one
+second; the debt is not capped.
 
-The adaptive minimum is 25 ms. Reactive mode uses its state minimum and delta
-`0.03`. Large packets can therefore delay admission beyond one second; the gate
-does not cap the debt. This conservative policy differs from an exact
-reproduction of the informative gate in Annex B of
-[ETSI TS 102 687 V1.2.1](https://www.etsi.org/deliver/etsi_ts/102600_102699/102687/01.02.01_60/ts_102687v010201p.pdf).
-With estimated accounting it does not measure driver queueing or completion.
+Only one reservation may be open. Failed or partial sends stop the sender and
+retain that uncertain reservation. It does not expire automatically. Stop and
+drain the transmitter and driver queues before restarting after an uncertain
+send. Invalid or stale CBR prevents new admission.
 
-### Python client
-
-`airtime_client.py` implements the measured `REPORT` contract for external
-transmitters. Provide a callback that sends exactly one packet, waits for real
-PHY completion and returns measured airtime in microseconds:
-
-```python
-from airtime_client import AirtimeClient
-
-# Implement send_and_wait_for_tx_completion in the external transmitter.
-# estimated_airtime_us must conservatively bound that packet's airtime.
-with AirtimeClient() as gate:
-    actual_us = gate.transmit(estimated_airtime_us, send_and_wait_for_tx_completion)
-```
-
-The callback and estimate are supplied by the caller; this is an integration
-example. The client does not automatically retry network errors or uncertain TX
-outcomes. Integrated C++ CAMs use estimated `ACCOUNT` directly and require no
-Python client, external driver bridge or service on port 5557.
+This conservative pacing policy is based on
+[ETSI TS 102 687 V1.2.1](https://www.etsi.org/deliver/etsi_ts/102600_102699/102687/01.02.01_60/ts_102687v010201p.pdf)
+and differs from an exact reproduction of its informative Annex B gate. See the
+[CAM airtime model](cam/README.md#estimated-airtime) for the estimate and its
+radio assumptions.
 
 ## Synthetic CBR
 
@@ -509,10 +453,8 @@ columns `timestamp_iso`, `t_rel_s`, `phase` and `cbr_value`.
 | Synthetic CBR ignored | Use `--fake-cbr`, the exact filename `fake_cbr_value`, the DCC working directory and a fraction such as `0.35`; disable `--limeric` |
 | Generated CAMs are not enqueued | Check fresh CBR, gate budget, monitor injection, interface state, channel correspondence and driver support for the selected legacy rate |
 | No GPS CAMs | Check device access, 9600 baud, checksummed GPRMC/GNRMC with fix `A`, fresh increasing fix times and synchronized host UTC; stationary normal generation is 1 Hz |
-| Gate port busy | Stop duplicate instances using UDP 5556; uncertain sends require transmitter/driver draining before restart |
 | DCC_NET startup or radio error | Verify same PHY/channel, a radiotap monitor, raw-socket privileges and TX-power readback with `iw dev <network_interface> info` |
 | No usable neighbour data | Check unprotected GN SHB traffic and parser support; secured GN requires decapsulation not included here |
-| Old feedback/port 5557 error | Rebuild the current sources; integrated CAM transmission has no external feedback service |
 | Dashboard waits or shows stale data | Check `--log-dir`, enabled features and current CSV writes; old files can remain from earlier sessions |
 
 `--cam-force-100ms` changes generation only and cannot force open a closed gate.
@@ -528,10 +470,10 @@ make test-python
 ```
 
 C++ suites cover reactive transitions, adaptive control, airtime accounting,
-UDP exchanges, CBR acquisition, CAM encoding/timing and DCC_NET. Python suites
-cover the external client, synthetic generator, dashboard and CLI validation.
+CBR acquisition, CAM encoding/timing and DCC_NET. Python suites cover the
+synthetic generator, dashboard and CLI validation.
 CLI tests require a built application binary and skip if it is absent. No radio
-is required; UDP tests need local socket access.
+is required.
 
 Validate injection, survey counters, EDCA queue selection, requested bitrate,
 power readback and estimated airtime using the target Linux driver and radio.

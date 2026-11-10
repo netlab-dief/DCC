@@ -6,11 +6,6 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
-#include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -24,7 +19,6 @@
 #include "rate_manager.h"
 #include "dcc_state_machine.h"
 #include "dcc_adaptive.h"
-#include "gate_server.h"
 #include "cbr_sampler.h"
 #include "gn_receiver.h"
 #include "cam/cam_sender.h"
@@ -88,16 +82,12 @@ private:
     std::atomic<int> current_bitrate_mbps_{6};
     double current_tx_rate_ = 10.0; // Inizializzato a 10 Hz (100ms) per LIMERIC
 
-    int sockfd_;
-    struct sockaddr_in cam_program_addr_;
-
     // Oggetti di supporto hardware e rete
     CBRReader cbr_reader;
     CbrSampler cbr_sampler_;
     RateManager rate_manager;
 
     AirtimeGate airtime_gate_;
-    GateServer gate_server_{airtime_gate_};
     std::unique_ptr<cam::Sender> cam_sender_;
     std::unique_ptr<cam::TelemetryLog> cam_telemetry_log_;
 

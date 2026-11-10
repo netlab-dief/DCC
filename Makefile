@@ -20,7 +20,7 @@ OUTPUT_DIR = .
 C_SOURCES := $(wildcard $(C_DIR)/*.c)
 
 # C++ source files (AGGIUNTO dcc/utils.cpp alla lista)
-CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp gate_server.cpp cbr_sampler.cpp dcc_net.cpp gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp
+CXX_SOURCES := main.cpp CBRReader.cpp utils.cpp TxPowerManager.cpp dcc_manager.cpp rate_manager.cpp dcc_state_machine.cpp airtime_gate.cpp cbr_sampler.cpp dcc_net.cpp gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp
 
 # Object files
 C_OBJS := $(patsubst $(C_DIR)/%.c, $(C_DIR)/%.o, $(C_SOURCES))
@@ -75,8 +75,8 @@ tests/test_dcc_state_machine: tests/test_dcc_state_machine.cpp dcc_state_machine
 test-python:
 	python3 -m unittest discover -s tests -p 'test_*.py' -v
 
-tests/test_dcc_control: tests/test_dcc_control.cpp dcc_adaptive.h airtime_gate.cpp airtime_gate.h gate_server.cpp gate_server.h
-	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_dcc_control.cpp airtime_gate.cpp gate_server.cpp -o $@
+tests/test_dcc_control: tests/test_dcc_control.cpp dcc_adaptive.h airtime_gate.cpp airtime_gate.h
+	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_dcc_control.cpp airtime_gate.cpp -o $@
 
 tests/test_cbr_sampler: tests/test_cbr_sampler.cpp cbr_sampler.cpp cbr_sampler.h dcc_adaptive.h
 	$(CXX) -Wall -Wextra -Werror -std=c++17 -pthread -I. tests/test_cbr_sampler.cpp cbr_sampler.cpp -o $@

@@ -5,8 +5,8 @@
 
 The integrated sender constructs CAMs, encapsulates them in GeoNetworking SHB
 frames and injects them through the second interface passed to `dcc`. It uses
-the shared DCC airtime gate directly. No external driver bridge or UDP feedback
-service is required.
+the internal DCC airtime gate directly, with admission and accounting inside
+the same process.
 
 ## Quick start
 
@@ -210,16 +210,14 @@ This estimates one broadcast transmission without ACK. It excludes backoff,
 driver waiting and unobserved extra attempts, and assumes the driver honors the
 requested RATE. Validate those assumptions on the intended radio.
 
-The sender obtains `ADMIT` from the shared gate, injects with
+The sender obtains `ADMIT` from the internal gate, injects with
 `AF_PACKET/SOCK_RAW`, and calls `ACCOUNT` with estimated airtime after a complete
 successful `sendto()`. This closes the reservation without waiting for PHY
 feedback; it does not prove hardware completion or reception.
 
 Failed/partial sends stop the sender and retain the uncertain reservation.
-External transmitters with actual PHY measurements can use `REPORT` instead.
-See the [gate protocol](../USAGE.md#external-transmitters-and-gate-protocol) for
-pacing, retry and recovery semantics. Integrated CAMs require no service on
-port 5557; legacy advisory notifications on port 5555 remain available.
+See [internal CAM admission](../USAGE.md#internal-cam-admission) for pacing and
+recovery semantics. The sender needs no external client or feedback service.
 
 ## Optional DCC-MCO extension
 
@@ -249,7 +247,7 @@ enqueues, rather than receptions or PHY completion. See the
 
 `make test` covers RMC parsing, UPER round trips, frame structure, motion
 thresholds, angle wrap, unavailable data, `N_GenCam`, stationary timing,
-low-frequency/history encoding, forced generation, shared admission, pending
+low-frequency/history encoding, forced generation, internal admission, pending
 replacement/expiry, generation during a blocked send, estimated accounting and
 uncertain-send failure. No radio is required for these tests.
 

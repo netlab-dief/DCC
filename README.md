@@ -2,14 +2,14 @@
 
 C++17 congestion control for Linux ITS-G5 experiments. DCC measures Channel Busy
 Ratio (CBR), requests radio power and legacy bitrate settings, and admits packets
-through a shared airtime gate. It includes a CAM generator, optional neighbour
+through a internal airtime gate. It includes a CAM generator, optional neighbour
 load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
 
 ## Documentation
 
 | Guide | Contents |
 | --- | --- |
-| [Usage](USAGE.md) | Installation, every command-line option, controller settings, telemetry, external clients and troubleshooting |
+| [Usage](USAGE.md) | Installation, every command-line option, controller settings, telemetry, internal admission and troubleshooting |
 | [CAM](cam/README.md) | Source data, generation rules, frame format, EDCA, estimated airtime and limitations |
 | [DCC_NET](DCC_NET.md) | Neighbour reception, global CBR, DCC-MCO encoding, radio requirements and validation |
 | [Architecture](CODEBASE_ANALYSIS.md) | Modules, ownership, threads, timing, admission and failure handling |
@@ -102,7 +102,7 @@ The [usage guide](USAGE.md#controllers) documents thresholds, requested radio
 settings and gate timing. With `--dcc-net`, both controllers use global CBR;
 the main console monitor continues to show local CBR.
 
-## Monitoring and external clients
+## Monitoring
 
 Telemetry is written in the working directory:
 
@@ -123,11 +123,9 @@ The dashboard requires Python's standard `curses` module and a terminal of at
 least 72 columns by 24 rows. Press `q`, Escape or Ctrl+C to close it; DCC continues
 running. See [telemetry](USAGE.md#telemetry) for column definitions and freshness.
 
-External transmitters can share the gate over UDP `127.0.0.1:5556` using
-`ADMIT`, `ACCOUNT` and `REPORT`. UDP `127.0.0.1:5555` carries advisory controller
-notifications. Every cooperating producer must use per-packet admission;
-notifications alone do not authorize transmission. See the
-[gate protocol](USAGE.md#external-transmitters-and-gate-protocol).
+The integrated CAM generator calls the internal airtime gate directly. Admission
+and estimated-airtime accounting run inside the DCC process; no external client
+or local UDP service is used.
 
 ## Synthetic CBR and tests
 
@@ -152,8 +150,7 @@ make test
 ```
 
 Tests cover controllers, sampling, the shared gate, CAM encoding/generation,
-DCC_NET, the dashboard and Python utilities. They require no radio; UDP tests
-require local socket access. CLI tests skip when the application binary is
+DCC_NET, the dashboard and Python utilities. They require no radio. CLI tests skip when the application binary is
 absent. GitHub Actions builds and tests on Ubuntu. Hardware behaviour still
 requires validation with the intended Linux driver and radio.
 

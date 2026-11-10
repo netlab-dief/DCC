@@ -15,21 +15,18 @@ flowchart LR
     NET --> Controller
     NET --> TX
     Controller --> RadioSettings["TX power and bitrate requests"]
-    Controller --> Gate["Shared AirtimeGate"]
-    Controller --> Advisory["UDP 5555: advisory notification"]
+    Controller --> Gate["Internal AirtimeGate"]
     Controller --> Generation["CAM producer: 10 ms checks"]
     Source["Static position / GPS RMC"] --> Generation
     Generation --> Latest["One pending CAM; newest replaces older"]
     Latest --> TX["CAM transmitter"]
     Gate --> TX
-    External["External clients: UDP 5556"] --> Gate
     TX --> Radio["Second interface: raw radiotap injection"]
     TX --> Gate
 ```
 
-The gate is an application-level admission service for one channel. Every
-producer sharing that channel must cooperate; it cannot intercept unrelated
-traffic. The two interface arguments must refer to the intended measured channel
+The gate controls the integrated CAM transmitter on one channel. It is called
+directly inside the process and cannot intercept unrelated radio traffic. The two interface arguments must refer to the intended measured channel
 and controlled transmitter.
 
 ## Modules
@@ -37,7 +34,7 @@ and controlled transmitter.
 | Source | Responsibility |
 | --- | --- |
 | `main.cpp` | Validate arguments, select DCC and CAM modes, register SIGINT/SIGTERM, monitor once per second |
-| `dcc_manager.cpp/.h` | Own sampler, controller, gate, UDP service and optional CAM sender; append controller telemetry |
+| `dcc_manager.cpp/.h` | Own sampler, controller, internal gate and optional CAM sender; append controller telemetry |
 | `CBRReader.cpp/.h` | Synchronously query active-channel survey counters through nl80211 |
 | `cbr_sampler.cpp/.h` | Acquire independently of control, timestamp/validate observations and publish a bounded queue |
 | `dcc_state_machine.cpp/.h` | Five reactive states, adjacent transitions and asymmetric persistence |
@@ -46,9 +43,7 @@ and controlled transmitter.
 | `dcc_adaptive.h` | Filter CBR and update the adaptive delta budget |
 | `TxPowerManager.cpp/.h` | Request fixed TX power through `NL80211_CMD_SET_WIPHY`; read configured power for DCC_NET |
 | `rate_manager.cpp/.h` | Request legacy bitrate masks through `NL80211_CMD_SET_TX_BITRATE_MASK` |
-| `airtime_gate.cpp/.h` | Synchronize admission, reserve one packet and account estimates or completion reports |
-| `gate_server.cpp/.h` | Serve external gate clients over loopback UDP 5556 |
-| `airtime_client.py` | External client requiring a real send-and-wait completion callback |
+| `airtime_gate.cpp/.h` | Synchronize admission, reserve one packet and account estimated enqueue airtime |
 | `cam/cam_timing.h` | Generation bounds, movement triggers, N_GenCam and optional forced 100 ms policy |
 | `cam/cam_generation.h` | Construct CAMs independently of TX; maintain pending slot, source validity, history and expiry |
 | `cam/airtime_estimator.h` | Estimate full-frame broadcast OFDM airtime using the selected nominal legacy rate |
@@ -66,7 +61,7 @@ is no longer needed to build DCC.
 
 ## Threads and ownership
 
-`DccManager` owns the CBR sampler, controller worker and UDP gate service. With
+`DccManager` owns the CBR sampler, controller worker and internal airtime gate. With
 CAM enabled, `cam::Sender` also owns a generation worker and a separate
 transmitter thread. The main thread reads monitoring values and propagates sender
 failures via `check_cam()`.
@@ -163,14 +158,13 @@ timings with Linux's nominal legacy rate table. See the [CAM guide](cam/README.m
 formula and the 10/20 MHz interpretation.
 
 After successful enqueue, `ACCOUNT` charges that estimate and releases the
-reservation, without claiming PHY completion. `REPORT` remains available for
-external clients that have real completion/airtime measurements. Missing
-accounting leaves a reservation open; no automatic retry follows an uncertain
+reservation, without claiming PHY completion. Missing accounting leaves a
+reservation open; no automatic retry follows an uncertain
 send. The gate charges at least the reservation and retains the most restrictive
 delta observed while it was pending. It paces packets from accounting receipt
 using `max(mode_minimum, charged_airtime / delta)` and preserves outstanding debt.
 
-The integrated sender has no feedback UDP socket and no external bridge. The
+The integrated sender calls the gate directly inside the DCC process. The
 manager publishes the current bitrate to the sender through an atomic getter;
 reactive state changes and adaptive updates refresh it. Packet-specific RATE
 keeps the estimate stable if the manager changes bitrate before the driver send.
@@ -181,7 +175,7 @@ unknown retries, delivery or hardware completion.
 
 The manager starts acquisition and control before enabling an optional CAM sender.
 Shutdown first joins the CAM workers, then disables admission, stops the NET
-receiver and sampler, joins the controller and stops the UDP service. There is
+receiver and sampler, then joins the controller. There is
 no external completion wait. Controller telemetry records requested settings.
 CAM telemetry is appended to
 `cam_telemetry_estimated_log.csv`, counts successful driver enqueues and estimated

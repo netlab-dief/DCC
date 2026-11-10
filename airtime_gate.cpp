@@ -25,7 +25,7 @@ void AirtimeGate::configure(double delta, std::chrono::microseconds minimum, Clo
 
 int AirtimeGate::suggested_interval_ms() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!have_completed_) return 1000; // No packet duration is assumed before TX feedback.
+    if (!have_completed_) return 1000; // No packet duration is assumed before enqueue accounting.
     return static_cast<int>((spacing(charged_us_).count() + 999) / 1000);
 }
 
@@ -48,10 +48,10 @@ std::string AirtimeGate::handle(const std::string& request, Clock::time_point no
     catch (const std::exception&) { return "ERROR number"; }
     if (id == 0 || airtime == 0 || airtime > 1000000) return "ERROR range";
     const std::string suffix = " " + std::to_string(id);
-    if (command == "REPORT" || command == "ACCOUNT") {
+    if (command == "ACCOUNT") {
         if (!pending_ && have_completed_ && id == completed_id_) return "DONE" + suffix;
         if (!pending_ || id != highest_id_) return "ERROR reservation";
-        // Charge at least the reservation, for either measured or estimated accounting.
+        // Charge at least the reservation, for estimated enqueue accounting.
         // Starting the whole spacing at accounting receipt is deliberately conservative:
         // budget updates cannot erase the charged debt. ACCOUNT does not measure queueing.
         charged_us_ = std::max(reserved_us_, airtime);
