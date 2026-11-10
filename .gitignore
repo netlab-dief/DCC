@@ -1,6 +1,6 @@
 *.o
 *.d
-dcc
+/dcc
 dcc_telemetry_log.csv
 cbr_trace_log.csv
 fake_cbr_value
