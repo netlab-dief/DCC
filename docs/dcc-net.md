@@ -107,8 +107,8 @@ update cadence and parameters. CBR-based radio policies also use global input.
 Invalid, stale, repeated or skipped local observations invalidate NET control;
 neighbours cannot replace missing local measurement. A trigger delayed by more
 than 150 ms breaks continuity, and recovery again requires two valid intervals.
-Global snapshots are valid for 150 ms. The gate also enforces its own budget
-validity. Immediately before transmission, the sender checks local/global
+Global snapshots are valid for 150 ms. The production gate uses an explicit deadline bounded by both control and
+local sample freshness (150 ms). Immediately before transmission, the sender checks local/global
 freshness again.
 
 ## Reception and parser limits
@@ -208,3 +208,11 @@ check its contribution disappears after one second; test remote congestion
 exceeding local load. Validate configured power, EIRP assumptions, RSSI and actual
 driver behaviour. Software tests alone do not certify radio interoperability or
 complete stack compliance.
+
+## Entity interfaces
+
+`DccNetwork` owns the receiver and neighbour state. Its CROSS input supplies the
+measured local CBR and aggregation target; its resource query exposes available
+airtime, estimated idle time and last enqueue feedback. SHB load exchange does
+not require a forwarding scheduler. ACC serializes configured-power readback,
+NET decoration and enqueue. See [architecture](architecture.md).

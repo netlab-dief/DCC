@@ -172,10 +172,9 @@ continues to show local CBR. See [DCC_NET](dcc-net.md) for aggregation and limit
 ### Console and shutdown
 
 The main monitor prints once per second: local CBR in percent (`-1` when invalid
-or stale), reactive state or `DYNAMIC (LIMERIC)`, and `T_off` in milliseconds.
-`T_off` is a state minimum in reactive mode and an advisory interval in adaptive
-mode. Reactive transitions and significant adaptive log updates produce
-additional messages. With CAM enabled, `[CAM MONITOR]` reports lifecycle counters,
+or stale), reactive state or `DYNAMIC (LIMERIC)`, and a suggested admission interval in milliseconds.
+This interval is distinct from idle time `Toff` and the CAM generation interval.
+Controller observations are recorded in telemetry. With CAM enabled, `[CAM MONITOR]` reports lifecycle counters,
 driver enqueue frequency, timing and estimated accounting.
 
 Some runtime messages remain in Italian. For example, `Invii al driver` means
@@ -254,8 +253,9 @@ never reused as a new measurement.
 Controllers reject samples older than 150 ms. With no fresh sample, they disable
 admission and reset continuity. Reactive persistence uses acquisition timestamps.
 Budget validity is measured from acquisition, so delayed processing does not
-refresh stale data. The gate independently rejects budgets older than 500 ms,
-including when control stalls. Netlink I/O has 80 ms timeouts per wait; a compound
+refresh stale data. The production gate enforces the same 150 ms deadline,
+including when control stalls. Adaptive validity is refreshed on every valid
+100 ms observation without changing the 200 ms delta-update cadence. Netlink I/O has 80 ms timeouts per wait; a compound
 operation may take longer and can invalidate its window. Actual timing depends
 on Linux scheduling and the driver.
 
@@ -281,7 +281,7 @@ bitrate fields describe requests; they do not certify hardware application.
 | `Interval_ms` | Reactive gate minimum or adaptive advisory interval |
 | `Tx_Power_dBm` | Requested power in dBm |
 | `MCS_Netlink` | Requested legacy bitrate in Mb/s; the historical column name is retained |
-| `HW_Config_Changed` | `YES` on a reactive state change or significant adaptive log update; not hardware confirmation |
+| `HW_Config_Changed` | `YES` on a reactive state change or adaptive delta update; not hardware confirmation |
 
 Move or rename this file between runs when separate logs are needed. It does not
 contain CAM transmission counts.
@@ -357,9 +357,9 @@ The integrated generator and transmitter run inside DCC. The sender calls
 `AirtimeGate` directly; there is no external client, UDP gate server or advisory
 notification socket.
 
-Each selected CAM reserves a packet with `ADMIT`. The gate grants admission only
+Each selected CAM reserves a channel-wide ticket through `reserve()`. The gate grants admission only
 when CBR is valid and the current airtime debt has elapsed. After a complete
-successful driver enqueue, `ACCOUNT` charges the packet's estimated airtime and
+successful driver enqueue, `account()` charges the packet's estimated airtime and
 closes the reservation. This accounting does not claim PHY completion or delivery.
 
 ```text
@@ -373,7 +373,8 @@ outstanding debt. Adaptive mode uses a 25 ms minimum; reactive mode uses its
 state minimum with delta `0.03`. Large packets can delay admission beyond one
 second; the debt is not capped.
 
-Only one reservation may be open. Failed or partial sends stop the sender and
+The gate allocates identifiers across all producers; waiting producers do not
+consume a ticket. Only one reservation may be open. Failed or partial sends stop the sender and
 retain that uncertain reservation. It does not expire automatically. Stop and
 drain the transmitter and driver queues before restarting after an uncertain
 send. Invalid or stale CBR prevents new admission.
@@ -480,3 +481,13 @@ power readback and estimated airtime using the target Linux driver and radio.
 NET field validation should use multiple nodes on one channel and capture SHB
 fields alongside logs. Passing software tests does not certify the ITS stack or
 hardware. GitHub Actions builds the application and runs the tests on Ubuntu.
+
+## Entity architecture and standards
+
+The manager composes DCC_ACC, DCC_CROSS, DCC_NET and an initial CAM Facilities
+adapter. Hardware policy, control policy and neighbour exchange have separate
+interfaces. See [architecture](architecture.md) and the fixed
+[standards profile](standards.md) for ownership, deadlines, requirement mapping
+and project-specific choices. Existing CLI switches and CSV column names remain
+available; the default controller remains reactive. Radio configuration failures
+now propagate to the application even when no CAM source is enabled.

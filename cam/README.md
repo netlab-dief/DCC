@@ -210,8 +210,8 @@ This estimates one broadcast transmission without ACK. It excludes backoff,
 driver waiting and unobserved extra attempts, and assumes the driver honors the
 requested RATE. Validate those assumptions on the intended radio.
 
-The sender obtains `ADMIT` from the internal gate, injects with
-`AF_PACKET/SOCK_RAW`, and calls `ACCOUNT` with estimated airtime after a complete
+The sender obtains a channel-wide admission ticket from the internal gate, injects
+with `AF_PACKET/SOCK_RAW`, and accounts the estimated airtime after a complete
 successful `sendto()`. This closes the reservation without waiting for PHY
 feedback; it does not prove hardware completion or reception.
 

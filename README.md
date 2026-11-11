@@ -1,6 +1,7 @@
-# DCC — Distributed Congestion Control
+# DCC — Decentralized Congestion Control
 
-C++17 congestion control for Linux ITS-G5 experiments. DCC measures Channel Busy
+C++17 congestion control for Linux ITS-G5 experiments, with separate DCC_ACC,
+DCC_NET and DCC_CROSS entities and a CAM Facilities adapter. DCC measures Channel Busy
 Ratio (CBR), requests radio power and legacy bitrate settings, and admits packets
 through a internal airtime gate. It includes a CAM generator, optional neighbour
 load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
@@ -12,6 +13,7 @@ load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
 | [Usage](docs/usage.md) | Installation, every command-line option, controller settings, telemetry, internal admission and troubleshooting |
 | [CAM](cam/README.md) | Source data, generation rules, frame format, EDCA, estimated airtime and limitations |
 | [DCC_NET](docs/dcc-net.md) | Neighbour reception, global CBR, DCC-MCO encoding, radio requirements and validation |
+| [Standards profile](docs/standards.md) | Fixed ETSI versions, requirement mapping and explicit project policies |
 | [Architecture](docs/architecture.md) | Modules, ownership, threads, timing, admission and failure handling |
 
 ## Repository layout
@@ -19,9 +21,9 @@ load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
 | Directory | Contents |
 | --- | --- |
 | `src/app/` | Executable entry point |
-| `src/dcc/` | Controllers, manager and internal airtime gate |
+| `src/dcc/` | Access/Cross entities, Facilities adapter, contracts and shared airtime gate |
 | `src/radio/` | CBR acquisition and radio configuration |
-| `src/net/` | DCC_NET state and monitor receiver |
+| `src/net/` | DCC_NET entity, neighbour state and monitor receiver |
 | `src/common/` | Shared logging, utilities and data definitions |
 | `cam/` | Existing CAM implementation, ASN.1 sources, schemas and guide; preserved in place |
 | `tools/` | Python dashboard and synthetic CBR generator |
@@ -169,7 +171,7 @@ make test
 ```
 
 Tests cover controllers, sampling, the shared gate, CAM encoding/generation,
-DCC_NET, the dashboard and Python utilities. They require no radio. CLI tests skip when the application binary is
+DCC_NET, architecture integration, manager lifecycle with a simulated radio, the dashboard and Python utilities. They require no radio. CLI tests skip when the application binary is
 absent. GitHub Actions builds and tests on Ubuntu. Hardware behaviour still
 requires validation with the intended Linux driver and radio.
 

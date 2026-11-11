@@ -32,7 +32,7 @@ public:
 
     // Callback enqueues once. ACCOUNT charges the reserved bitrate-based estimate.
     // Exceptions deliberately leave any outstanding reservation closed.
-    static bool transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimate,
+    static bool transmit(AirtimeGate& gate, std::uint64_t estimate,
         const std::function<void()>& send_once, const std::atomic<bool>& stopping,
         const std::function<bool()>& ready = {},
         const std::function<std::uint64_t()>& current_estimate = {},

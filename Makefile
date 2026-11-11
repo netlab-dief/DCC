@@ -4,8 +4,7 @@ CXX = g++
 NL_CFLAGS := $(shell pkg-config --cflags libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -I/usr/include/libnl3)
 NL_LIBS := $(shell pkg-config --libs libnl-3.0 libnl-genl-3.0 2>/dev/null || echo -lnl-3 -lnl-genl-3)
 
-# cam/ is preserved, including its relative includes of former root headers.
-# Generated forwarding headers let those includes resolve without editing cam/.
+# Forwarding headers preserve CAM's historical relative includes of root headers.
 COMPAT_HEADERS := build/include/console_log.h build/include/airtime_gate.h
 PROJECT_INCLUDES := -I. -Isrc -Ibuild/include/cam -Icam/UtilsEncode
 CPPFLAGS += $(PROJECT_INCLUDES)
@@ -18,12 +17,14 @@ C_SOURCES := $(wildcard cam/UtilsEncode/*.c)
 CXX_SOURCES := src/app/main.cpp src/radio/CBRReader.cpp src/common/utils.cpp \
     src/radio/TxPowerManager.cpp src/dcc/dcc_manager.cpp src/radio/rate_manager.cpp \
     src/dcc/dcc_state_machine.cpp src/dcc/airtime_gate.cpp src/radio/cbr_sampler.cpp \
-    src/net/dcc_net.cpp src/net/gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp
+    src/net/dcc_net.cpp src/net/gn_receiver.cpp src/net/dcc_network.cpp \
+    src/dcc/dcc_access.cpp src/dcc/dcc_cross.cpp src/radio/dcc_radio.cpp \
+    cam/cam_message.cpp cam/cam_sender.cpp
 C_OBJS := $(patsubst %.c,build/%.o,$(C_SOURCES))
 CXX_OBJS := $(patsubst %.cpp,build/%.o,$(CXX_SOURCES))
 PROJECT_HEADERS := $(wildcard src/*/*.h cam/*.h)
 TARGET = dcc
-TEST_NAMES := test_dcc_state_machine test_dcc_control test_cbr_sampler test_cam test_console_log test_dcc_net
+TEST_NAMES := test_dcc_state_machine test_dcc_control test_cbr_sampler test_cam test_console_log test_dcc_net test_dcc_architecture test_dcc_manager
 TEST_BINS := $(addprefix build/tests/,$(TEST_NAMES))
 
 .DEFAULT_GOAL := all
@@ -54,6 +55,13 @@ build/include/airtime_gate.h:
 $(TEST_BINS): $(PROJECT_HEADERS) | $(COMPAT_HEADERS)
 
 build/tests/test_dcc_state_machine: src/dcc/dcc_state_machine.cpp
+build/tests/test_dcc_manager: src/dcc/dcc_manager.cpp src/dcc/dcc_cross.cpp \
+    src/dcc/dcc_access.cpp src/dcc/airtime_gate.cpp src/dcc/dcc_state_machine.cpp \
+    src/radio/cbr_sampler.cpp src/net/dcc_net.cpp src/net/dcc_network.cpp \
+    src/net/gn_receiver.cpp cam/cam_message.cpp cam/cam_sender.cpp $(C_OBJS)
+build/tests/test_dcc_architecture: src/dcc/dcc_cross.cpp src/dcc/dcc_access.cpp \
+    src/dcc/airtime_gate.cpp src/dcc/dcc_state_machine.cpp src/radio/cbr_sampler.cpp \
+    src/net/dcc_net.cpp src/net/dcc_network.cpp src/net/gn_receiver.cpp
 build/tests/test_dcc_control: src/dcc/airtime_gate.cpp
 build/tests/test_cbr_sampler: src/radio/cbr_sampler.cpp
 build/tests/test_cam: src/net/dcc_net.cpp cam/cam_message.cpp cam/cam_sender.cpp src/dcc/airtime_gate.cpp $(C_OBJS)

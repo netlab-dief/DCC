@@ -151,7 +151,7 @@ int run(int argc, char* argv[]) {
 
         ConsoleLine() << "[MAIN MONITOR] CBR locale: " << current_cbr
                   << "% | Stato: " << to_string(current_state, use_limeric) 
-                  << " | T_off corrente: " << current_interval << " ms"
+                  << " | Intervallo ammissione suggerito: " << current_interval << " ms"
                   << std::endl;
 
         // Aspetta 1 secondo prima del prossimo log, ma si sveglia se interrompiamo

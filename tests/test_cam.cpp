@@ -124,20 +124,20 @@ void test_admission() {
     cam::Telemetry telemetry;
     int calls = 0;
     gate.configure(0.03, 100ms, AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(gate, 1, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "admitted CAM enqueued");
+    require(cam::Sender::transmit(gate, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "admitted CAM enqueued");
     require(calls == 1 && telemetry.snapshot().accounted == 1 && telemetry.snapshot().estimated_airtime_us == 500,
         "successful enqueue accounts reserved estimate without hardware feedback");
     require(gate.suggested_interval_ms() == 100, "estimated airtime accounted");
     require(gate.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "next packet must wait");
     stopping = true;
-    require(!cam::Sender::transmit(gate, 2, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
+    require(!cam::Sender::transmit(gate, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
     require(calls == 1 && telemetry.snapshot().tx_errors == 0, "shutdown does not send or count an error");
     AirtimeGate failed;
     failed.configure(0.03, 100ms, AirtimeGate::Clock::now());
     stopping = false;
     bool threw = false;
     try {
-        cam::Sender::transmit(failed, 1, 500, [] { throw std::runtime_error("driver enqueue failed"); }, stopping, {}, {}, &telemetry);
+        cam::Sender::transmit(failed, 500, [] { throw std::runtime_error("driver enqueue failed"); }, stopping, {}, {}, &telemetry);
     } catch (const std::runtime_error&) { threw = true; }
     require(threw && telemetry.snapshot().accounted == 1 && telemetry.snapshot().tx_errors == 1,
         "failed enqueue is not counted as successful estimated accounting");
@@ -145,19 +145,19 @@ void test_admission() {
     AirtimeGate invalid_estimate;
     invalid_estimate.configure(0.03, 100ms, AirtimeGate::Clock::now());
     try {
-        cam::Sender::transmit(invalid_estimate, 1, 0, [&] { ++calls; }, stopping, {}, {}, &telemetry);
+        cam::Sender::transmit(invalid_estimate, 0, [&] { ++calls; }, stopping, {}, {}, &telemetry);
         require(false, "invalid estimate must fail");
     } catch (const std::runtime_error&) {}
     require(calls == 1 && telemetry.snapshot().tx_errors == 2, "invalid estimate rejected before driver enqueue");
     AirtimeGate source_gate;
     source_gate.configure(0.03, 100ms, AirtimeGate::Clock::now());
     int fixes = 0;
-    require(cam::Sender::transmit(source_gate, 1, 500, [&] {
+    require(cam::Sender::transmit(source_gate, 500, [&] {
         require(fixes == 3, "no transmission until source is ready");
     }, stopping, [&] { return ++fixes == 3; }), "source refreshed while awaiting admission");
     AirtimeGate variable_size;
     variable_size.configure(0.03, 25ms, AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(variable_size, 1, 1, [] {}, stopping,
+    require(cam::Sender::transmit(variable_size, 1, [] {}, stopping,
         [] { return true; }, [] { return 2000; }), "reserve size of selected CAM including LF");
     require(variable_size.suggested_interval_ms() == 67, "reservation uses selected packet rather than stale size estimate");
 }
@@ -374,7 +374,7 @@ void test_generation_during_driver_enqueue() {
     auto waiting_signal = waiting.get_future();
     auto completion_signal = completed.get_future();
     auto tx = std::async(std::launch::async, [&] {
-        cam::Sender::transmit(gate, 1, 500, [&] {
+        cam::Sender::transmit(gate, 500, [&] {
             buffer.submitted(initial.version);
             waiting.set_value();
             completion_signal.wait();
@@ -556,7 +556,7 @@ void test_airtime_estimation() {
         gate.configure(0.03, std::chrono::milliseconds(25), AirtimeGate::Clock::now());
         auto selected = frame;
         cam::set_legacy_rate(selected, rates[i]);
-        require(cam::Sender::transmit(gate, i + 1, 1, [&] { ++sends; telemetry.submitted(0, 0); }, stopping,
+        require(cam::Sender::transmit(gate, 1, [&] { ++sends; telemetry.submitted(0, 0); }, stopping,
             [] { return true; }, [&] { return cam::estimate_airtime_us(selected, selected[8] / 2); }, &telemetry),
             "multiple CAMs enqueue with changing bitrates and no feedback service");
     }

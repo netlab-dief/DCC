@@ -42,34 +42,30 @@ void Sender::check() {
     if (failure_) std::rethrow_exception(failure_);
 }
 
-bool Sender::transmit(AirtimeGate& gate, std::uint64_t id, std::uint64_t estimate,
+bool Sender::transmit(AirtimeGate& gate, std::uint64_t estimate,
     const std::function<void()>& send_once, const std::atomic<bool>& stopping,
     const std::function<bool()>& ready, const std::function<std::uint64_t()>& current_estimate,
     Telemetry* telemetry) {
     try {
-        const auto suffix = " " + std::to_string(id);
         while (!stopping) {
             if (ready && !ready()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
             const auto reservation = current_estimate ? current_estimate() : estimate;
-            const auto reply = gate.handle("ADMIT" + suffix + " " + std::to_string(reservation), AirtimeGate::Clock::now());
-            if (reply == "GRANT" + suffix) {
+            const auto admission = gate.reserve(reservation, AirtimeGate::Clock::now());
+            if (admission.packet_id) {
                 // Once reserved, enqueue/account even if shutdown was requested.
                 const auto started = AirtimeGate::Clock::now();
                 send_once();
                 const auto completed = AirtimeGate::Clock::now();
-                if (gate.handle("ACCOUNT" + suffix + " " + std::to_string(reservation), AirtimeGate::Clock::now()) != "DONE" + suffix)
+                if (!gate.account(admission.packet_id, reservation, AirtimeGate::Clock::now()))
                     throw std::runtime_error("CAM estimated airtime accounting rejected");
                 if (telemetry) telemetry->accounted(
                     std::chrono::duration<double, std::milli>(completed - started).count(), reservation);
                 return true;
             }
-            if (reply.rfind("WAIT" + suffix + " ", 0) != 0)
-                throw std::runtime_error("CAM admission rejected: " + reply);
-            const auto delay = std::stoull(reply.substr(reply.find_last_of(' ') + 1));
-            std::this_thread::sleep_for(std::chrono::microseconds(std::min<std::uint64_t>(delay, 10000)));
+            std::this_thread::sleep_for(std::min(admission.retry_after, std::chrono::microseconds(10000)));
         }
         return false;
     } catch (...) {
@@ -140,15 +136,12 @@ void Sender::run() {
 
     std::thread transmitter([&] {
         try {
-            std::uint64_t id = 0;
             std::uint16_t sequence = 0;
             while (!stopping_) {
-                id = std::max(id + 1, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count()));
                 std::optional<GeneratedCam> selected;
                 auto selected_since = AirtimeGate::Clock::now();
                 auto injected_at = selected_since;
-                const bool sent = transmit(gate_, id, 1, [&] {
+                const bool sent = transmit(gate_, 1, [&] {
                     if (!selected) throw std::runtime_error("CAM missing after admission");
                     auto enqueue = [&] {
                         // NET dispatch may wait for an in-flight power update.
