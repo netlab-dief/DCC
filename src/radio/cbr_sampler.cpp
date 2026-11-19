@@ -56,6 +56,7 @@ void CbrSampler::run() {
     bool have_previous = false;
     std::int64_t previous_slot = 0;
     std::uint64_t sequence = 0;
+    CbrSample::Clock::time_point previous_start{}, previous_end{};
     while (true) {
         // UTC defines the phase; an interruptible steady wait prevents a clock
         // adjustment from making shutdown wait for the wall clock to catch up.
@@ -70,16 +71,24 @@ void CbrSampler::run() {
         CbrSample sample;
         sample.utc_slot = slot;
         sample.sequence = ++sequence;
+        const auto read_started = steady_clock::now();
         try { sample.value = read_(); }
         catch (...) { sample.value = -1.0f; }
-        sample.measured_at = steady_clock::now();
+        const auto read_finished = steady_clock::now();
+        // Conservative freshness: the snapshot may have been taken at call entry.
+        sample.measured_at = read_started;
+        if (have_previous) sample.measurement_window = CbrMeasurementWindow::between(
+            previous_start, previous_end, read_started, read_finished);
         const auto finished_slot = duration_cast<milliseconds>(
             system_clock::now().time_since_epoch()).count() / 100;
         sample.valid = have_previous && previous_slot + 1 == slot && finished_slot == slot &&
+            sample.measurement_window.valid() &&
             std::isfinite(sample.value) && sample.value >= 0.0f && sample.value <= 1.0f;
         // A late/missed read changes the measurement window; prime a new pair
         // instead of labelling an aggregate measurement as a 100 ms sample.
         previous_slot = finished_slot;
+        previous_start = read_started;
+        previous_end = read_finished;
         have_previous = finished_slot == slot && std::isfinite(sample.value) &&
             sample.value >= 0.0f && sample.value <= 1.0f;
         {

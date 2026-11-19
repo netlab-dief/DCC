@@ -34,9 +34,8 @@ public:
     void configure(int power, int bitrate) override {
         if (!power_.set_tx_power(survey_, power, true))
             throw std::runtime_error("DCC_ACC TX power configuration failed");
-        // Packet-specific radiotap RATE remains authoritative for estimation.
-        // This legacy mask API logs failure; it is not hardware confirmation.
-        rate_.set_fixed_rate_netlink(bitrate);
+        if (!rate_.set_fixed_rate_netlink(bitrate))
+            throw std::runtime_error("DCC_ACC bitrate configuration failed");
     }
     std::optional<double> configured_power_dbm() override { return power_.get_tx_power(survey_); }
 private:

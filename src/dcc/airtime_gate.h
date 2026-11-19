@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include "dcc/dcc_contracts.h"
@@ -29,13 +30,20 @@ public:
 
 private:
     std::chrono::microseconds spacing(std::uint64_t airtime) const;
+    Clock::time_point duty_deadline(std::uint64_t airtime, Clock::time_point now);
     void grant_locked(std::uint64_t id, std::uint64_t airtime);
     bool account_locked(std::uint64_t id, std::uint64_t airtime, Clock::time_point now);
     std::string handle_locked(const std::string& request, Clock::time_point now);
     mutable std::mutex mutex_;
     double delta_ = 0.0006;
     double pending_delta_ = 0.0006;
+    double cbr_ = 0;
+    double pending_cbr_ = 0;
     std::chrono::microseconds minimum_{25000};
+    std::chrono::microseconds pending_minimum_{25000};
+    struct Charge { Clock::time_point expires_at; std::uint64_t airtime; };
+    std::deque<Charge> recent_charges_;
+    std::uint64_t recent_airtime_us_ = 0;
     Clock::time_point valid_until_{};
     Clock::time_point next_{};
     Clock::time_point completed_{};

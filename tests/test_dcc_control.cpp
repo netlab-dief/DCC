@@ -1,5 +1,6 @@
 #include "dcc/dcc_adaptive.h"
 #include "dcc/airtime_gate.h"
+#include "dcc/radio_limits.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -69,7 +70,7 @@ void test_gate() {
     gate.configure(0.03, 25ms, t0 + 305ms);
     require(gate.handle("ADMIT 3 100", t0 + 305ms) == "GRANT 3", "budget updates retain debt");
     gate.handle("ACCOUNT 3 100", t0 + 306ms);
-    require(gate.handle("ADMIT 4 100", t0 + 330ms) == "WAIT 4 1000", "25ms minimum spacing");
+    require(gate.handle("ADMIT 4 100", t0 + 330ms) == "WAIT 4 1100", "25ms idle time excludes packet airtime");
     require(gate.handle("ADMIT 4 100", t0 + 900ms).find("WAIT") == 0, "expired CBR blocks admissions");
     gate.configure(0.03, 100ms, t0 + 900ms);
     require(gate.handle("ADMIT 4 100", t0 + 900ms) == "GRANT 4", "reactive profile usable");
@@ -95,11 +96,70 @@ void test_estimated_accounting() {
     require(gate.handle("ACCOUNT 2 500", start + 100ms) == "DONE 2", "second estimated packet accounted");
     require(gate.handle("ACCOUNT 3 500", start + 100ms) == "ERROR reservation", "unreserved accounting rejected");
 }
+
+void test_radio_limits() {
+    const auto t = AirtimeGate::Clock::time_point{};
+    dcc::AccessControl control;
+    control.valid = true;
+    control.airtime_fraction = 0.03;
+    control.valid_until = t + 10s;
+    AirtimeGate gate;
+    gate.configure(control, t);
+    for (auto airtime : {0U, 4001U, 5000U}) {
+        bool rejected = false;
+        try { gate.reserve(airtime, t); } catch (const std::runtime_error&) { rejected = true; }
+        require(rejected, "Ton outside 0..4ms rejected before enqueue");
+    }
+    require(gate.handle("ADMIT 1 5000", t) == "ERROR range", "diagnostic admission enforces the same Ton bound");
+    const auto first = gate.reserve(4000, t);
+    require(first.packet_id && !gate.account(first.packet_id, 4001, t), "4ms boundary accepted; oversized accounting rejected");
+    require(gate.account(first.packet_id, 4000, t), "valid accounting still owns its reservation");
+
+    require(dcc::regulatory_idle_time(500, 0.619) == 25ms, "uncongested Toff minimum");
+    require(dcc::regulatory_idle_time(500, 0.62) == 25ms, "threshold boundary retains 25ms minimum");
+    require(dcc::regulatory_idle_time(500, 0.9) == 621723us, "high-CBR Toff rounds up to a whole microsecond");
+    require(dcc::regulatory_idle_time(4000, 1) == 1s, "only regulatory Toff formula is capped at one second");
+
+    AirtimeGate transient;
+    control.channel_busy_ratio = 0.9;
+    transient.configure(control, t);
+    auto ticket = transient.reserve(500, t);
+    require(ticket.packet_id && transient.account(ticket.packet_id, 500, t), "high-CBR packet accounted");
+    require(!transient.reserve(500, t + 25ms).packet_id, "high-CBR guard overrides still-relaxed adaptive delta");
+    require(!transient.reserve(500, t + 622222us).packet_id, "Toff plus Ton enforced before boundary");
+    require(transient.reserve(500, t + 622223us).packet_id, "reopens at conservative Ton+Toff boundary");
+
+    AirtimeGate pending;
+    control.channel_busy_ratio = 0;
+    pending.configure(control, t);
+    ticket = pending.reserve(500, t);
+    control.channel_busy_ratio = 0.9;
+    pending.configure(control, t);
+    control.channel_busy_ratio = 0;
+    pending.configure(control, t);
+    require(pending.account(ticket.packet_id, 500, t) && !pending.reserve(500, t + 25ms).packet_id,
+        "tightest CBR seen during reservation survives a subsequent relaxation");
+
+    AirtimeGate duty;
+    duty.configure(control, t);
+    for (int i = 0; i < 7; ++i) {
+        const auto at = t + i * 133334us;
+        ticket = duty.reserve(4000, at);
+        require(ticket.packet_id && duty.account(ticket.packet_id, 4000, at), "seven 4ms packets fit rolling budget");
+    }
+    duty.disable();
+    duty.configure(control, t + 900ms);
+    require(!duty.reserve(4000, t + 933338us).packet_id,
+        "rolling duty-cycle budget survives disable/reconfiguration and blocks an eighth packet");
+    require(!duty.reserve(4000, t + 1003999us).packet_id, "rolling history retains a packet through estimated completion");
+    require(duty.reserve(4000, t + 1004ms).packet_id, "rolling budget recovers when first charge expires");
+}
 }
 
 int main() {
     test_adaptive();
     test_gate();
     test_estimated_accounting();
+    test_radio_limits();
     std::cout << "All adaptive DCC and internal airtime gate tests passed\n";
 }

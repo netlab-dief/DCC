@@ -19,6 +19,7 @@ struct AccessControl {
     int power_limit_dbm = 23;
     int bitrate_mbps = 6;
     Clock::time_point valid_until{};
+    double channel_busy_ratio = 0; // Unfiltered CBR for the independent radio limits.
 };
 
 // Driver-enqueue feedback, with estimated airtime. Never PHY completion.

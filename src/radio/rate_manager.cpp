@@ -1,5 +1,7 @@
 #include "common/console_log.h"
 #include "radio/rate_manager.h"
+#include "common/bounded_io.h"
+#include <memory>
 #include <iostream>
 #include <cstdlib> // Necessario per std::system
 #include <sstream>
@@ -52,61 +54,65 @@ void RateManager::set_fixed_rate(int rate_idx) {
     }
 }
 
-void RateManager::set_fixed_rate_netlink(int rate_idx) {
+bool RateManager::set_fixed_rate_netlink(int rate_idx) {
     if (!is_initialized_) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore: Istanza non inizializzata!\033[0m" << std::endl;
-        return;
+        return false;
     }
 
     int bitrate_num = map_rate_index(rate_idx);
+    switch (bitrate_num) {
+        case 6: case 9: case 12: case 18: case 24: case 36: case 48: case 54: break;
+        default: return false;
+    }
 
     // 1. Risoluzione dell'indice dell'interfaccia di rete (es. "wlan1" -> 3)
     unsigned int if_index = if_nametoindex(interface_.c_str());
     if (if_index == 0) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Interfaccia non trovata: " << interface_ << "\033[0m" << std::endl;
-        return;
+        return false;
     }
 
     // 2. Allocazione e connessione del socket Netlink
-    struct nl_sock* socket = nl_socket_alloc();
+    std::unique_ptr<nl_sock, decltype(&nl_socket_free)> owned_socket(nl_socket_alloc(), nl_socket_free);
+    auto* socket = owned_socket.get();
     if (!socket) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore allocazione socket Netlink\033[0m" << std::endl;
-        return;
+        return false;
     }
 
     if (genl_connect(socket) < 0) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Connessione Generic Netlink fallita\033[0m" << std::endl;
-        nl_socket_free(socket);
-        return;
+        return false;
     }
+    if (!set_io_timeout(nl_socket_get_fd(socket))) return false;
 
     // 3. Risoluzione dinamica dell'ID del driver 'nl80211'
     int driver_id = genl_ctrl_resolve(socket, "nl80211");
     if (driver_id < 0) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Driver nl80211 non trovato nel kernel\033[0m" << std::endl;
-        nl_socket_free(socket);
-        return;
+        return false;
     }
 
     // 4. Allocazione del messaggio Netlink principale
-    struct nl_msg* msg = nlmsg_alloc();
+    std::unique_ptr<nl_msg, decltype(&nlmsg_free)> owned_msg(nlmsg_alloc(), nlmsg_free);
+    auto* msg = owned_msg.get();
     if (!msg) {
-        nl_socket_free(socket);
-        return;
+        return false;
     }
 
     // 5. Configurazione dell'intestazione del messaggio (NL80211_CMD_SET_TX_BITRATE_MASK)
-    genlmsg_put(msg, 
+    if (!genlmsg_put(msg,
                 NL_AUTO_PORT, 
                 NL_AUTO_SEQ, 
                 driver_id, 
                 0, 
                 NLM_F_REQUEST, 
                 NL80211_CMD_SET_TX_BITRATE_MASK, 
-                0);
+                0)) return false;
 
     // Aggiunta dell'indice dell'interfaccia target
-    nla_put_u32(msg, NL80211_ATTR_IFINDEX, if_index);
+    if (nla_put_u32(msg, NL80211_ATTR_IFINDEX, if_index) < 0) return false;
 
     // 6. Costruzione della struttura nidificata presa dall'esempio di 'iw'
     bool serialization_success = false;
@@ -132,25 +138,22 @@ void RateManager::set_fixed_rate_netlink(int rate_idx) {
 
     if (!serialization_success) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore di serializzazione dei parametri Netlink!\033[0m" << std::endl;
-        nlmsg_free(msg);
-        nl_socket_free(socket);
-        return;
+        return false;
     }
 
     // 7. Invio sincrono al kernel e attesa dell'ACK di successo
-    int ret = nl_send_sync(socket, msg);
-
-    // Pulizia del socket principale
-    nl_socket_free(socket);
+    int ret = nl_send_sync(socket, owned_msg.release()); // libnl consumes the message.
 
     // 8. Gestione del risultato ritornato dal kernel
     if (ret != 0) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore nell'impostare il bitrate: "
                   << nl_geterror(ret) << "\033[0m" << std::endl;
+        return false;
     } else {
         ConsoleLine() << "\033[1;32m[RateManager][Netlink] Bitrate impostato: " << interface_
                   << " -> legacy-5 " << bitrate_num << " Mbps\033[0m" << std::endl;
     }
+    return true;
 }
 
 void RateManager::cleanup() {

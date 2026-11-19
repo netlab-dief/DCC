@@ -1,5 +1,6 @@
 #include "radio/cbr_sampler.h"
 #include "dcc/dcc_adaptive.h"
+#include "common/bounded_io.h"
 
 #include <atomic>
 #include <cmath>
@@ -7,6 +8,9 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <cerrno>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace {
 using namespace std::chrono_literals;
@@ -29,6 +33,41 @@ void test_freshness() {
     require(!sample.fresh(sample.measured_at - 1ms), "future timestamp rejected");
     sample.valid = false;
     require(!sample.fresh(sample.measured_at), "invalid sample never fresh");
+}
+
+void test_measurement_windows() {
+    using Window = CbrMeasurementWindow;
+    const auto t = CbrSample::Clock::time_point{};
+    require(Window::between(t, t + 2ms, t + 100ms, t + 102ms).valid(), "bounded short reads bracket a 100ms window");
+    require(!Window::between(t, t + 2ms, t + 100ms, t + 170ms).valid(),
+        "2ms to 70ms read cannot be labelled a known 100ms window");
+    require(!Window::between(t, t + 70ms, t + 100ms, t + 102ms).valid(),
+        "70ms to 2ms read is also uncertain");
+    require(!Window::between(t, t + 70ms, t + 100ms, t + 170ms).valid(),
+        "even stable slow reads do not locate survey snapshots accurately enough");
+    require(!Window::between(t, t + 2ms, t + 200ms, t + 202ms).valid(), "missed measurement is not a 100ms window");
+    require(!Window::between(t, t + 2ms, t + 1ms, t + 3ms).valid(), "overlapping reads invalid");
+    require(Window::between(t, t + 10ms, t + 100ms, t + 110ms).valid(), "90..110ms acquisition policy boundary inclusive");
+}
+
+void test_bounded_io() {
+    require(!set_io_timeout(-1) && !set_io_timeout(0, 0), "invalid descriptor/timeout rejected");
+    int sockets[2];
+    require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create unprivileged timeout test socket");
+    require(set_io_timeout(sockets[0], 20), "install send and receive timeouts");
+    for (int option : {SO_RCVTIMEO, SO_SNDTIMEO}) {
+        timeval configured{};
+        socklen_t size = sizeof(configured);
+        require(getsockopt(sockets[0], SOL_SOCKET, option, &configured, &size) == 0 &&
+            (configured.tv_sec || configured.tv_usec), "both socket timeout options installed");
+    }
+    char byte;
+    const auto started = CbrSample::Clock::now();
+    const auto result = recv(sockets[0], &byte, 1, 0);
+    const auto error = errno;
+    require(result < 0 && (error == EAGAIN || error == EWOULDBLOCK), "missing reply returns timeout instead of blocking forever");
+    require(CbrSample::Clock::now() - started < 1s, "receive wait bounded");
+    close(sockets[0]); close(sockets[1]);
 }
 
 void test_acquisition_independent_of_consumer() {
@@ -92,6 +131,20 @@ void test_invalid_reads_and_recovery() {
     require(take(sampler, cursor).valid, "subsequent complete window recovers");
 }
 
+void test_irregular_reads() {
+    CbrSampler sampler;
+    int reads = 0;
+    sampler.start([&] {
+        std::this_thread::sleep_for(++reads == 2 ? 70ms : 2ms);
+        return 0.5f;
+    });
+    std::uint64_t cursor = 0;
+    require(!take(sampler, cursor).valid, "first irregular read primes baseline");
+    require(!take(sampler, cursor).valid, "70ms read is invalid even if it fits its UTC slot");
+    require(!take(sampler, cursor).valid, "window following long read is also uncertain");
+    require(take(sampler, cursor).valid, "two subsequent short reads restore valid acquisition");
+}
+
 void test_late_acquisition() {
     CbrSampler sampler;
     int reads = 0;
@@ -111,8 +164,11 @@ void test_late_acquisition() {
 
 int main() {
     test_freshness();
+    test_measurement_windows();
+    test_bounded_io();
     test_acquisition_independent_of_consumer();
     test_invalid_reads_and_recovery();
+    test_irregular_reads();
     test_late_acquisition();
     std::cout << "All independent CBR acquisition tests passed\n";
 }

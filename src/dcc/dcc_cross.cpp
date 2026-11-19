@@ -1,4 +1,5 @@
 #include "dcc/dcc_cross.h"
+#include "dcc/radio_limits.h"
 #include <algorithm>
 #include <cmath>
 
@@ -12,8 +13,8 @@ int adaptive_power(int interval_ms) {
 }
 dcc::Duration interval(const dcc::AccessControl& control, const dcc::TxFeedback& feedback) {
     if (!feedback.forwarded_at || feedback.airtime.count() <= 0) return std::chrono::seconds(1);
-    return std::max(control.minimum_admission_interval, dcc::Duration(static_cast<std::int64_t>(
-        std::ceil(feedback.airtime.count() / control.airtime_fraction))));
+    return dcc::admission_interval(feedback.airtime.count(), control.airtime_fraction,
+        control.minimum_admission_interval, control.channel_busy_ratio);
 }
 }
 
@@ -58,6 +59,9 @@ dcc::PolicySnapshot DccCross::evaluate(const std::optional<CbrSample>& local,
     previous_slot_ = sample.utc_slot;
     policy_.control_cbr = sample.value;
     auto& access = policy_.access;
+    // Local channel occupancy is always a bound, including when NET's global
+    // value contains the preceding local interval. Do not use filtered CBR here.
+    access.channel_busy_ratio = std::max(double(sample.value), double(local->value));
     access.valid_until = sample.measured_at + std::chrono::milliseconds(150);
     if (network_enabled_) access.valid_until = std::min(access.valid_until,
         local->measured_at + std::chrono::milliseconds(150));

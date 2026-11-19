@@ -65,6 +65,28 @@ void test_global_selection() {
     const auto bounded = cross.evaluate(local, sample(0.9f, 2, t + 100ms), {}, t + 100ms);
     require(bounded.access.valid_until == t + 150ms,
         "NET control lifetime cannot outlive the local measurement it relies on");
+    cross.reset(dcc::Mode::reactive, true);
+    auto guard = cross.evaluate(sample(0.95f, 1, t), sample(0.1f, 1, t), {}, t);
+    require(guard.access.channel_busy_ratio == static_cast<double>(0.95f),
+        "regulatory guard cannot be relaxed by a lagging global CBR");
+}
+
+void test_adaptive_transient_limits() {
+    DccCross cross;
+    cross.reset(dcc::Mode::adaptive, false);
+    const auto t = Clock::time_point{};
+    dcc::PolicySnapshot policy;
+    for (int slot = 1; slot <= 2001; ++slot)
+        policy = cross.evaluate(sample(slot <= 2000 ? 0.f : 0.9f, slot, t), {}, {}, t);
+    require(policy.access.airtime_fraction == 0.03 && policy.access.channel_busy_ratio > 0.89,
+        "odd high-CBR slot updates the raw guard even before adaptive delta changes");
+    AirtimeGate gate;
+    gate.configure(policy.access, t);
+    auto ticket = gate.reserve(500, t);
+    require(ticket.packet_id && gate.account(ticket.packet_id, 500, t), "transient packet accounted");
+    require(!gate.reserve(500, t + 25ms).packet_id, "CROSS-to-ACC applies independent regulatory guard");
+    require(cross.resources(gate.feedback(), t).suggested_admission_interval > 622ms,
+        "Facilities resource advice includes the regulatory interval");
 }
 void test_net_to_cross() {
     dccnet::State state;
@@ -216,6 +238,7 @@ void test_access_boundary() {
 }
 int main() {
     test_adaptive_ports();
+    test_adaptive_transient_limits();
     test_global_selection();
     test_net_to_cross();
     test_resources_and_facilities();

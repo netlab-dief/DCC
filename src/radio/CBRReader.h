@@ -14,6 +14,7 @@
 #include <netlink/attr.h>
 #include <thread>
 #include <mutex> // Incluso per std::mutex
+#include <optional>
 #include "common/utils.h"
 
 // Forward declaration della classe per il cbr_handler (se necessario)
@@ -29,6 +30,8 @@ class CBRReader {
             unsigned long long startBusyTime;
             unsigned long long startReceiveTime;
             unsigned long long startTransmitTime;
+            bool haveRxTime = false, haveTxTime = false;
+            std::optional<unsigned> frequency;
             float currentCBR = -1.0f;
             float currentTxTime = -1.0f;
             float currentRxTime = -1.0f;

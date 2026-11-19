@@ -35,7 +35,8 @@ void DccAccess::apply(const dcc::AccessControl& control) {
         return;
     }
     if (!std::isfinite(control.airtime_fraction) || control.airtime_fraction < 0.0006 ||
-        control.airtime_fraction > 0.03 || control.minimum_admission_interval.count() < 25000) {
+        control.airtime_fraction > 0.03 || control.minimum_admission_interval.count() < 25000 ||
+        !std::isfinite(control.channel_busy_ratio) || control.channel_busy_ratio < 0 || control.channel_busy_ratio > 1) {
         gate_.disable();
         throw std::invalid_argument("invalid DCC_ACC resource budget");
     }

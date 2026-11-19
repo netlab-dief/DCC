@@ -49,7 +49,8 @@ tested with simulated hardware on either macOS or Linux.
 ## Explicit contracts
 
 - **AccessControl:** station airtime fraction, minimum admission interval,
-  requested power upper limit, requested legacy bitrate and a monotonic deadline.
+  raw CBR for independent radio limits, requested power upper limit, requested
+  legacy bitrate and a monotonic deadline.
 - **TxFeedback:** the shared gate's packet identifier, charged estimated airtime,
   and accounting time after successful driver enqueue. This is not an actual PHY
   transmit timestamp or completion report.
@@ -99,8 +100,10 @@ mutexes. No controller or NET-state lock is held during radio I/O. Cached radio
 requests avoid repeated Netlink configuration for unchanged values. NET requires
 configured-power readback before admission. A failed configuration/readback
 closes admission and propagates through `check_cam()` even with CAM disabled.
-The legacy bitrate-mask API still logs failure rather than confirming hardware;
-the packet-specific radiotap RATE remains the basis of the estimate.
+Bitrate-mask errors propagate just like power errors. Netlink send/receive
+waits have checked 80 ms socket timeouts, including family resolution. ACK success
+confirms configuration acceptance, not the over-air bitrate; the packet-specific
+radiotap RATE remains the basis of the estimate.
 
 Shutdown joins CAM generation/TX, wakes and stops NET/acquisition, joins control,
 and leaves admission disabled. Restart resets controller pairing and acquisition;
@@ -120,7 +123,15 @@ on policy updates. A failed/uncertain send leaves the reservation closed. Waitin
 producers receive no packet ID and cannot release another producer's reservation.
 
 The conservative delay starts after accounting, rather than a measured over-air
-transmission. It is not capped at one second. This is a project policy, not an
+transmission. Independently of delta, the gate rejects estimated Ton outside
+0 < Ton <= 4 ms and enforces EN 302 571 V2.1.1 §4.2.10.2 Toff, adding Ton before
+the idle interval. Raw control/local CBR (the larger in NET mode) drives this guard,
+not the adaptive low-pass filter. The tightest CBR, delta and minimum observed
+while a reservation is pending survive relaxation before accounting. A rolling
+one-second ledger allows at most 30 ms of estimated airtime, counting each whole
+packet conservatively until one second after its estimated end. Debt and ledger
+survive disable/reconfiguration. Only the regulatory Toff formula is capped at
+one second; delta debt is not. This is a project policy, not an
 exact reproduction of the informative ETSI Annex B gate. The gate cannot control
 traffic injected outside this process; future services must use the shared path.
 
@@ -130,8 +141,9 @@ Sources remain grouped under `src/`; CAM codec/schemas stay in `cam/`. Make puts
 objects, dependencies and tests under `build/` and the application at `./dcc`.
 Forwarding headers preserve CAM's historical relative include paths.
 
-`make test` includes eight C++ suites, including architecture integration and the
-real manager with a simulated radio, plus Python tests. New checks exercise global
+`make test` includes eight portable C++ suites, including architecture integration
+and the real manager with a simulated radio, plus Python tests. Linux also runs
+synthetic Netlink survey parsing and bitrate failure tests. New checks exercise global
 input selection, missing/replayed samples, UTC recovery, resource units, multiple
 producers sharing one debt, power readback failure, expiry during configuration,
 NET resource ports and restart/error propagation without CAM.

@@ -47,7 +47,8 @@ applicable normative limits.
 | TS 102 636-4-2 §§5–7 and Annex A: NET variables, aggregation, SHB and lifetime | Existing `dccnet::State`, parser/encoder and receiver behind `DccNetwork`; NET tests and NET-to-CROSS integration tests |
 | TS 102 636-4-2 §8: TC/UP/AC mapping | Default CAM is TC2 / UP3 / AC_BE. Existing arbitrary `--cam-priority` overrides remain experimental and do not claim the standard mapping |
 | EN 302 637-2 §6.1.3: CAM generation | Existing generation policy plus Facilities advice; normal and forced-mode CAM tests. Forced 100 ms is an explicit project experiment |
-| TS 103 175 §7.2 and EN 302 571: over-air limits | Must be assessed against actual airtime/driver operation; the architecture and estimated gate alone are not a proof of these limits |
+| TS 103 175 §7.2 and EN 302 571 §4.2.10.2: over-air limits | Independent estimated Ton <= 4 ms, raw-CBR Toff guard and rolling 30 ms/second ledger; boundary and adaptive-transient tests. Actual PHY limits still require radio validation |
+| EN 302 636-4-1 §9.5.2.2 and ITS time representation | Shared UTC-to-ITS conversion includes leap-second insertions since the epoch; tests include the ETSI 2007 example and all known insertion boundaries |
 
 ## Explicit project choices
 
@@ -60,6 +61,9 @@ applicable normative limits.
   the ETSI delta equations.
 - Invalid input closes admission. Adaptive recovery needs a new consecutive pair;
   NET mode does not silently change to local-only control.
+- Local survey timing is bracketed by callback entry/exit. A nominal 100 ms
+  measurement is accepted only when all possible durations lie in 90–110 ms.
+  This tolerance is a project acquisition policy, not an ETSI constant.
 - The production deadline is 150 ms from the control observation, also bounded
   by local freshness in NET mode. No radio operation extends that deadline.
 - NET's aggregation threshold is `0.62`; the adaptive algorithm target is `0.68`.

@@ -36,8 +36,11 @@ Fixes more than two seconds behind or ahead of host UTC are rejected for
 message generation. Date validation includes leap years. Synchronize the host
 UTC clock before use.
 
-CAM reference-position time comes from RMC date/time relative to the 2004 epoch,
-modulo 65536 ms. Static CAMs and GeoNetworking timestamps use system UTC.
+CAM reference-position time comes from RMC date/time, converted to elapsed TAI
+milliseconds since the ITS epoch (2004-01-01 00:00:00 UTC), modulo 65536 ms.
+Static CAMs and GeoNetworking use the same conversion from the system UTC clock.
+The shared conversion includes the five leap-second insertions from 2004 through
+2017; its table must be extended when future insertions become effective.
 Coordinates use 10⁻⁷ degrees, speed uses cm/s and heading uses 0.1° units.
 RMC provides position, speed and heading without measurement confidence data.
 
@@ -67,6 +70,12 @@ CAM retains `3601` for unavailable heading, while GN uses zero as a fallback.
 GN heading is also zero for a stationary station. Available 360° headings are
 normalized to 0°. For a moving source with unknown heading, GN zero is a
 fallback rather than a northbound measurement; CAM still signals unavailable.
+
+Speed is also mapped separately. CAM retains `16383` (`SpeedValue_unavailable`)
+when RMC supplies no speed; GN uses zero as an unknown-value fallback. The old
+`0x7fff` encoding would represent -0.01 m/s in GN's signed 15-bit speed field.
+GN zero alone therefore does not prove standstill. Available speeds are preserved
+in both encodings, including the maximum available CAM value of 16382 cm/s.
 
 ## Generation policy
 

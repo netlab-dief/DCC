@@ -227,7 +227,8 @@ delta     = clamp((1 − 0.016) × previous_delta + offset, 0.0006, 0.03)
 
 Initial filtered CBR is zero; initial delta is `0.0006`. Invalid input or a gap
 breaks pair continuity without resetting the accumulated filtered value or delta.
-The gate applies a 25 ms minimum and the current delta budget. Its advisory
+The gate applies at least 25 ms of idle time after estimated Ton, the current
+delta budget and independent high-CBR radio limits. Its advisory
 interval may exceed 1000 ms; normal CAM generation clamps its input to
 100–1000 ms while radio admission retains the full airtime debt.
 
@@ -243,6 +244,14 @@ A dedicated `CbrSampler` thread reads the active-channel survey through
 reading establishes a baseline. Only this thread accesses the radio reader or
 synthetic input file. Each observation has a fractional value, monotonic
 acquisition timestamp, UTC 100 ms slot, sequence number and validity flag.
+Callback entry/exit timestamps bracket the unknown survey snapshot instant.
+Every possible measurement duration must lie in 90–110 ms to accept the nominal
+100 ms window. This +/-10 ms tolerance is a project acquisition policy, not an
+ETSI constant. Freshness starts at callback entry. Slow/irregular reads are
+invalid even when they finish in the expected UTC slot. Missing/truncated active
+or busy counters, impossible counter deltas, counter resets and channel changes
+invalidate the baseline; complete subsequent readings must re-establish it.
+RX/TX counters remain optional and missing values are reported unavailable.
 
 Reads use absolute nominal UTC-aligned 100 ms deadlines, so processing time is
 not added to each period. The synchronized queue holds 16 observations. A late
@@ -363,7 +372,7 @@ successful driver enqueue, `account()` charges the packet's estimated airtime an
 closes the reservation. This accounting does not claim PHY completion or delivery.
 
 ```text
-next admission delay = max(mode minimum, charged airtime / delta)
+next admission delay = max(mode minimum, ceil(charged airtime / delta), Ton + regulatory Toff)
 ```
 
 The delay starts at accounting time. Charged airtime is at least the original
@@ -372,6 +381,16 @@ restrictive delta seen during the reservation, and controller updates preserve
 outstanding debt. Adaptive mode uses a 25 ms minimum; reactive mode uses its
 state minimum with delta `0.03`. Large packets can delay admission beyond one
 second; the debt is not capped.
+
+Packets with estimated Ton outside (0, 4 ms] are rejected before enqueue.
+Regulatory Toff is at least 25 ms. At raw CBR >= 0.62 it is also at least
+`min(1000 ms, Ton * (4000 * (CBR - 0.62) / CBR - 1))`.
+The guard uses the larger of current local and selected controller CBR. Only
+this regulatory formula is capped at one second. A separate rolling ledger
+limits estimated airtime to 30 ms per second, conservatively retaining each
+complete charge until one second after its estimated end. Reconfiguration and
+restart preserve both debt and this ledger. These estimates do not prove the
+corresponding over-air limits without driver/PHY validation.
 
 The gate allocates identifiers across all producers; waiting producers do not
 consume a ticket. Only one reservation may be open. Failed or partial sends stop the sender and

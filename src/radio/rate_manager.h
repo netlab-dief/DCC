@@ -18,7 +18,7 @@ public:
 
     // Esegue direttamente il comando iw con il numero corrispondente all'indice
     void set_fixed_rate(int rate_idx);
-    void set_fixed_rate_netlink(int rate_idx);
+    bool set_fixed_rate_netlink(int rate_idx);
 
     void cleanup();
 

@@ -25,6 +25,9 @@ CXX_OBJS := $(patsubst %.cpp,build/%.o,$(CXX_SOURCES))
 PROJECT_HEADERS := $(wildcard src/*/*.h cam/*.h)
 TARGET = dcc
 TEST_NAMES := test_dcc_state_machine test_dcc_control test_cbr_sampler test_cam test_console_log test_dcc_net test_dcc_architecture test_dcc_manager
+ifeq ($(shell uname -s),Linux)
+TEST_NAMES += test_radio_netlink
+endif
 TEST_BINS := $(addprefix build/tests/,$(TEST_NAMES))
 
 .DEFAULT_GOAL := all
@@ -66,6 +69,11 @@ build/tests/test_dcc_control: src/dcc/airtime_gate.cpp
 build/tests/test_cbr_sampler: src/radio/cbr_sampler.cpp
 build/tests/test_cam: src/net/dcc_net.cpp cam/cam_message.cpp cam/cam_sender.cpp src/dcc/airtime_gate.cpp $(C_OBJS)
 build/tests/test_dcc_net: src/net/dcc_net.cpp src/dcc/dcc_state_machine.cpp src/net/gn_receiver.cpp
+
+build/tests/test_radio_netlink: tests/test_radio_netlink.cpp build/src/radio/CBRReader.o \
+    build/src/radio/rate_manager.o build/src/common/utils.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(NL_CFLAGS) $(TEST_FLAGS) $(filter %.cpp %.o,$^) -o $@ -lssl -lcrypto -lm $(NL_LIBS)
 
 build/tests/%: tests/%.cpp
 	@mkdir -p $(dir $@)

@@ -102,24 +102,36 @@ int cbr_handler(struct nl_msg *msg, void *arg)
     // Il lock verrà rilasciato automaticamente a fine funzione (RAII)
     std::lock_guard<std::mutex> lock(reader->m_mutex);
 
-    struct nlattr *tb[NL80211_ATTR_MAX + 1];
+    struct nlattr *tb[NL80211_ATTR_MAX + 1]{};
     struct genlmsghdr *gnlh = (struct genlmsghdr *) nlmsg_data(nlmsg_hdr(msg));
-    struct nlattr *sinfo[NL80211_SURVEY_INFO_MAX + 1];
+    struct nlattr *sinfo[NL80211_SURVEY_INFO_MAX + 1]{};
 
-    static struct nla_policy survey_policy[NL80211_SURVEY_INFO_MAX + 1] = {};
+    struct nla_policy survey_policy[NL80211_SURVEY_INFO_MAX + 1] = {};
     survey_policy[NL80211_SURVEY_INFO_FREQUENCY].type = NLA_U32;
     survey_policy[NL80211_SURVEY_INFO_NOISE].type = NLA_U8;
+    for (int attribute : {NL80211_SURVEY_INFO_CHANNEL_TIME, NL80211_SURVEY_INFO_CHANNEL_TIME_BUSY,
+            NL80211_SURVEY_INFO_CHANNEL_TIME_RX, NL80211_SURVEY_INFO_CHANNEL_TIME_TX})
+        survey_policy[attribute].type = NLA_U64;
 
-    nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0), genlmsg_attrlen(gnlh, 0), NULL);
+    auto invalidate = [&] {
+        reader->m_cbr_data.firstTime = true;
+        reader->m_cbr_data.currentCBR = -1.0f;
+        reader->m_cbr_data.currentRxTime = -1.0f;
+        reader->m_cbr_data.currentTxTime = -1.0f;
+        reader->m_cbr_data.currentBusyTime = -1.0f;
+        return NL_SKIP;
+    };
+    if (nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0), genlmsg_attrlen(gnlh, 0), NULL) < 0)
+        return invalidate();
 
     if (!tb[NL80211_ATTR_SURVEY_INFO]) {
         fprintf(stderr, "Survey data missing!\n");
-        return NL_SKIP;
+        return invalidate();
     }
 
     if (nla_parse_nested(sinfo, NL80211_SURVEY_INFO_MAX, tb[NL80211_ATTR_SURVEY_INFO], survey_policy)) {
         fprintf(stderr, "Failed to parse nested survey attributes!\n");
-        return NL_SKIP;
+        return invalidate();
     }
 
     unsigned long long activeTime = 0, busyTime = 0, rxTime = 0, txTime = 0;
@@ -127,6 +139,14 @@ int cbr_handler(struct nl_msg *msg, void *arg)
     if (!sinfo[NL80211_SURVEY_INFO_IN_USE])
     {
         return NL_SKIP;  // Not the active channel
+    }
+    if (!sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME] || !sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_BUSY])
+        return invalidate();
+    if (sinfo[NL80211_SURVEY_INFO_FREQUENCY]) {
+        const auto frequency = nla_get_u32(sinfo[NL80211_SURVEY_INFO_FREQUENCY]);
+        if (reader->m_cbr_data.frequency && reader->m_cbr_data.frequency != frequency)
+            invalidate();
+        reader->m_cbr_data.frequency = frequency;
     }
 
     if (sinfo[NL80211_SURVEY_INFO_FREQUENCY] && reader->m_cbr_data.verbose && reader->m_cbr_data.firstTime)
@@ -146,6 +166,7 @@ int cbr_handler(struct nl_msg *msg, void *arg)
 
     if (sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_TX])
         txTime = nla_get_u64(sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_TX]);
+    if (busyTime > activeTime) return invalidate();
 
     bool firstTime = reader->m_cbr_data.firstTime;
 
@@ -159,13 +180,14 @@ int cbr_handler(struct nl_msg *msg, void *arg)
         reader->m_cbr_data.startBusyTime = busyTime;
         reader->m_cbr_data.startReceiveTime = rxTime;
         reader->m_cbr_data.startTransmitTime = txTime;
+        reader->m_cbr_data.haveRxTime = sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_RX] != nullptr;
+        reader->m_cbr_data.haveTxTime = sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_TX] != nullptr;
         reader->m_cbr_data.currentCBR = -1.0f;
         return NL_SKIP;
     }
 
     // Check for counter reset or wraparound
-    if (activeTime < reader->m_cbr_data.startActiveTime || busyTime < reader->m_cbr_data.startBusyTime ||
-        rxTime < reader->m_cbr_data.startReceiveTime || txTime < reader->m_cbr_data.startTransmitTime) {
+    if (activeTime < reader->m_cbr_data.startActiveTime || busyTime < reader->m_cbr_data.startBusyTime) {
         if (reader->m_cbr_data.verbose)
         {
             ConsoleLine(std::cerr) << "Warning: time counters reset or wrapped. Skipping...\n";
@@ -174,13 +196,18 @@ int cbr_handler(struct nl_msg *msg, void *arg)
         reader->m_cbr_data.startBusyTime = busyTime;
         reader->m_cbr_data.startReceiveTime = rxTime;
         reader->m_cbr_data.startTransmitTime = txTime;
-        return NL_SKIP;
+        return invalidate();
     }
 
     unsigned long long deltaActiveTime = activeTime - reader->m_cbr_data.startActiveTime;
     unsigned long long deltaBusyTime = busyTime - reader->m_cbr_data.startBusyTime;
-    unsigned long long deltaReceiveTime = rxTime - reader->m_cbr_data.startReceiveTime;
-    unsigned long long deltaTransmitTime = txTime - reader->m_cbr_data.startTransmitTime;
+    const bool rx_valid = sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_RX] && reader->m_cbr_data.haveRxTime &&
+        rxTime >= reader->m_cbr_data.startReceiveTime;
+    const bool tx_valid = sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_TX] && reader->m_cbr_data.haveTxTime &&
+        txTime >= reader->m_cbr_data.startTransmitTime;
+    unsigned long long deltaReceiveTime = rx_valid ? rxTime - reader->m_cbr_data.startReceiveTime : 0;
+    unsigned long long deltaTransmitTime = tx_valid ? txTime - reader->m_cbr_data.startTransmitTime : 0;
+    if (!deltaActiveTime || deltaBusyTime > deltaActiveTime) return invalidate();
 
     if (reader->m_cbr_data.verbose)
     {
@@ -193,10 +220,7 @@ int cbr_handler(struct nl_msg *msg, void *arg)
     float cbr = -1.0f;
 
     if (deltaActiveTime > 0) {
-        if (deltaBusyTime < 0) deltaBusyTime = 0;
         cbr = static_cast<float>(deltaBusyTime) / deltaActiveTime;
-        if (cbr < 0.0f) cbr = 0.0f;
-        if (cbr > 1.0f) cbr = 1.0f;
     }
 
     if (reader->m_cbr_data.verbose && cbr >= 0.0f)
@@ -209,8 +233,10 @@ int cbr_handler(struct nl_msg *msg, void *arg)
     reader->m_cbr_data.startReceiveTime = rxTime;
     reader->m_cbr_data.startTransmitTime = txTime;
     reader->m_cbr_data.currentBusyTime = deltaBusyTime;
-    reader->m_cbr_data.currentRxTime = deltaReceiveTime;
-    reader->m_cbr_data.currentTxTime = deltaTransmitTime;
+    reader->m_cbr_data.currentRxTime = rx_valid ? static_cast<float>(deltaReceiveTime) : -1.0f;
+    reader->m_cbr_data.currentTxTime = tx_valid ? static_cast<float>(deltaTransmitTime) : -1.0f;
+    reader->m_cbr_data.haveRxTime = sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_RX] != nullptr;
+    reader->m_cbr_data.haveTxTime = sinfo[NL80211_SURVEY_INFO_CHANNEL_TIME_TX] != nullptr;
 
     return NL_SKIP;
 }
