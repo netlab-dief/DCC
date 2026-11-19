@@ -3,7 +3,7 @@
 #include "cam_timing.h"
 #include "cam_telemetry.h"
 #include "airtime_estimator.h"
-#include <deque>
+#include "path_history.h"
 #include <mutex>
 
 namespace cam {
@@ -51,16 +51,17 @@ public:
             ((*position.sample_timestamp_ms > wall_ms && *position.sample_timestamp_ms - wall_ms > 2000) ||
              (wall_ms > *position.sample_timestamp_ms && wall_ms - *position.sample_timestamp_ms > 2000)))) {
             discard(Telemetry::Event::invalidated);
+            history_.clear();
             return false;
         }
-        observe(position, wall_ms);
+        history_.observe(position, position.sample_timestamp_ms.value_or(wall_ms));
         auto decision = policy_.evaluate(position, now, dcc_ms);
         if (!decision) return false;
         // Preserve an LF container if the CAM carrying it was replaced before
         // transmission. In particular, the first transmitted CAM contains LF.
         decision->low_frequency = decision->low_frequency || !lf_transmitted_ || (pending_ && pending_->low_frequency);
         LowFrequencyData lf;
-        lf.history.assign(history_.rbegin(), history_.rend());
+        lf.history = history_.points();
         auto frame = make_frame(position, station_id_, mac_, 0, wall_ms, priority_, decision->low_frequency ? &lf : nullptr);
         // 6.1.5.1: discard a construction that missed its 50 ms budget. Leave
         // the trigger unconsumed, so the next check can construct fresh data.
@@ -99,7 +100,6 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         discard(Telemetry::Event::invalidated);
         history_.clear();
-        last_observation_.reset();
     }
 
 private:
@@ -112,25 +112,13 @@ private:
         if (pending_ && pending_->expires_at - now < std::chrono::milliseconds(50))
             discard(Telemetry::Event::expired);
     }
-    void observe(const Position& position, std::uint64_t wall_ms) {
-        const auto sample_time = position.sample_timestamp_ms.value_or(wall_ms);
-        if (last_observation_ && sample_time > last_observation_->timestamp_ms &&
-            (position.latitude != last_observation_->position.latitude || position.longitude != last_observation_->position.longitude)) {
-            history_.push_back(*last_observation_);
-            if (history_.size() > 23) history_.pop_front();
-        }
-        if (!last_observation_ || sample_time > last_observation_->timestamp_ms)
-            last_observation_ = PathSample{position, sample_time};
-    }
-
     std::uint32_t station_id_;
     std::array<std::uint8_t, 6> mac_;
     std::uint8_t priority_;
     mutable std::mutex mutex_;
     GenerationPolicy policy_;
     mutable std::optional<GeneratedCam> pending_;
-    std::optional<PathSample> last_observation_;
-    std::deque<PathSample> history_;
+    PathHistory history_;
     std::uint64_t version_ = 0;
     bool lf_transmitted_ = false;
     Telemetry* telemetry_;

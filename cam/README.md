@@ -28,6 +28,10 @@ vehicle generation is enabled unless `--cam-force-100ms` is supplied. See the
 
 ## Source data and timestamps
 
+The sender builds unsigned experimental CAM packets. Complete EN 302 637-2
+conformance also requires the signing mechanism of §6.2.2.2, which this project
+does not implement. See the [standards profile](../docs/standards.md).
+
 For device discovery, a serial-data check and comparison with received CAMs,
 see the [real GPS procedure](../docs/field-validation.md#real-gps-input).
 
@@ -160,10 +164,18 @@ send at 500 ms. If its pending CAM is replaced, the replacement retains the
 container. It contains ordinary vehicle role, unavailable exterior lights
 (zero bits), and available fix history with up to 23 points.
 
+History uses geometric point selection rather than storing every fix. The
+selector checks intermediate samples against a chord with a 1 m error limit,
+limits chords to 310 m, and retains the boundary point needed for a 300 m
+history when available within the 23-point CAM limit. These are calibration
+defaults from VSC-A reference method three, not universal ETSI constants.
+Sub-metre stationary jitter does not fill the transmitted history.
+
 History is newest-first, uses offsets from the preceding point and times in
-10 ms units, starts empty, and breaks across an unrepresentable gap. Its quality
-and resolution depend on the source fixes. This is fix history; SAE J2735 path
-selection/compression is not implemented.
+10 ms units, starts empty, and breaks across missing fixes or unrepresentable
+offsets. No altitude is invented from RMC. The selector and CAM round trips have
+automated tests; exact conformance to the SAE J2735 (2009) text referenced by
+ETSI remains an audit item. See [algorithm, sources and limits](../docs/path-history.md).
 
 ## QoS priority and EDCA
 

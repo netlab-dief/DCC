@@ -24,7 +24,7 @@ C_OBJS := $(patsubst %.c,build/%.o,$(C_SOURCES))
 CXX_OBJS := $(patsubst %.cpp,build/%.o,$(CXX_SOURCES))
 PROJECT_HEADERS := $(wildcard src/*/*.h cam/*.h)
 TARGET = dcc
-TEST_NAMES := test_dcc_state_machine test_dcc_control test_cbr_sampler test_cam test_console_log test_dcc_net test_dcc_architecture test_dcc_manager
+TEST_NAMES := test_dcc_state_machine test_dcc_control test_cbr_sampler test_cam test_path_history test_console_log test_dcc_net test_dcc_architecture test_dcc_manager
 ifeq ($(shell uname -s),Linux)
 TEST_NAMES += test_radio_netlink
 endif
