@@ -6,6 +6,11 @@ This project targets a fixed ITS-G5 Release 1 DCC architecture on a single
 channel. Version numbers are intentional. This is an implementation profile and
 traceability record, not a declaration of complete stack/radio conformity.
 
+The CAM sender currently emits unsigned experimental packets. It does not meet
+the Authorization Ticket / BitmapSsp signing requirement of EN 302 637-2
+V1.4.1 §6.2.2.2. Successful decoding and DCC tests do not remove this gap.
+See the [complete revalidation](revalidation-2026-11-19.md) for evidence and limits.
+
 ## References
 
 | Function | Fixed reference |
@@ -47,6 +52,8 @@ applicable normative limits.
 | TS 102 636-4-2 §§5–7 and Annex A: NET variables, aggregation, SHB and lifetime | Existing `dccnet::State`, parser/encoder and receiver behind `DccNetwork`; NET tests and NET-to-CROSS integration tests |
 | TS 102 636-4-2 §8: TC/UP/AC mapping | Default CAM is TC2 / UP3 / AC_BE. Existing arbitrary `--cam-priority` overrides remain experimental and do not claim the standard mapping |
 | EN 302 637-2 §6.1.3: CAM generation | Existing generation policy plus Facilities advice; normal and forced-mode CAM tests. Forced 100 ms is an explicit project experiment |
+| EN 302 637-2 §6.2.2.2: CAM signing | Not implemented: sender constructs an unsecured GN SHB directly; no Authorization Ticket signing or secured-GN decapsulation |
+| EN 302 637-2 §B.38: PathHistory | Geometric selection based on VSC-A reference method three; sampled-error, continuity and CAM round-trip tests. Exact SAE J2735 (2009) conformance audit remains open; see [details](path-history.md) |
 | TS 103 175 §7.2 and EN 302 571 §4.2.10.2: over-air limits | Independent estimated Ton <= 4 ms, raw-CBR Toff guard and rolling 30 ms/second ledger; boundary and adaptive-transient tests. Actual PHY limits still require radio validation |
 | EN 302 636-4-1 §9.5.2.2 and ITS time representation | Shared UTC-to-ITS conversion includes leap-second insertions since the epoch; tests include the ETSI 2007 example and all known insertion boundaries |
 

@@ -415,6 +415,50 @@ void test_low_frequency_encoding() {
     ASN_STRUCT_FREE(asn_DEF_CAM, decoded);
 }
 
+void test_concise_history_in_cam() {
+    using namespace std::chrono_literals;
+    const cam::GenerationBuffer::Clock::time_point start{};
+    const std::array<std::uint8_t, 6> mac{1, 2, 3, 4, 5, 6};
+    cam::GenerationBuffer buffer(4316, mac, 3, true);
+    cam::Position p;
+    const int initial_latitude = p.latitude;
+    auto decode_history = [&](const cam::GeneratedCam& packet, int count) {
+        const auto offset = cam::radiotap_length(packet.frame) + 78;
+        CAM_t* decoded = nullptr;
+        require(uper_decode_complete(nullptr, &asn_DEF_CAM, reinterpret_cast<void**>(&decoded),
+                    packet.frame.data() + offset, packet.frame.size() - offset).code == RC_OK,
+                "selected path history decodes from full CAM frame");
+        const auto* lf = decoded->cam.camParameters.lowFrequencyContainer;
+        require(lf && lf->choice.basicVehicleContainerLowFrequency.pathHistory.list.count == count,
+                "CAM contains selected path points rather than every GPS fix");
+        if (count == 1) {
+            const auto* point = lf->choice.basicVehicleContainerLowFrequency.pathHistory.list.array[0];
+            require(point->pathPosition.deltaLatitude == -1000 && *point->pathDeltaTime == 100,
+                    "compressed CAM offsets and timestamps refer to original selected sample");
+        }
+        ASN_STRUCT_FREE(asn_DEF_CAM, decoded);
+    };
+    for (int i = 0; i <= 10; ++i) {
+        p.latitude = initial_latitude + i * 100;
+        p.sample_timestamp_ms = 100000 + i * 100;
+        require(buffer.generate(p, start + i * 100ms, 100000 + i * 100, 100), "construct CAM from successive GPS samples");
+        auto packet = *buffer.latest(start + i * 100ms);
+        if (i == 10) decode_history(packet, 1);
+        buffer.submitted(packet.version); buffer.transmitted(packet);
+    }
+    buffer.invalidate_source();
+    p.sample_timestamp_ms = 101500;
+    require(buffer.generate(p, start + 1500ms, 101500, 100), "generation resumes after source recovery");
+    decode_history(*buffer.latest(start + 1500ms), 0);
+    cam::GenerationBuffer stationary(4316, mac);
+    for (int i = 0; i <= 10; ++i) {
+        p.latitude = initial_latitude + i % 3;
+        p.sample_timestamp_ms = 100000 + i * 100;
+        stationary.generate(p, start + i * 100ms, 100000 + i * 100, 100);
+    }
+    decode_history(*stationary.latest(start + 1000ms), 0);
+}
+
 void test_generation_during_driver_enqueue() {
     using namespace std::chrono_literals;
     const cam::GenerationBuffer::Clock::time_point start{};
@@ -626,6 +670,7 @@ int main() {
     test_position(); test_encoding(); test_admission(); test_generation_timing();
     test_generation_policy(); test_generation_buffer(); test_low_frequency_encoding();
     test_generation_during_driver_enqueue();
+    test_concise_history_in_cam();
     test_forced_generation();
     test_cam_telemetry();
     test_airtime_estimation();

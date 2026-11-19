@@ -24,7 +24,7 @@ struct PathSample {
 };
 struct LowFrequencyData {
     std::uint8_t exterior_lights = 0; // CDD: all bits zero when unavailable.
-    std::vector<PathSample> history; // Newest first; at most 23 points encoded.
+    std::vector<PathSample> history; // Selected original samples, newest first; at most 23 encoded.
 };
 
 // Accepts a single RMC sentence with a valid fix and checksum.
