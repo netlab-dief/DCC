@@ -16,9 +16,9 @@ public:
     // Inizializza il manager passando l'interfaccia (es. "wlan1")
     bool setup_rate_manager(const std::string& interface);
 
-    // Esegue direttamente il comando iw con il numero corrispondente all'indice
+    // Compatibility wrapper: uses the same Netlink path as set_fixed_rate_netlink.
     void set_fixed_rate(int rate_idx);
-    void set_fixed_rate_netlink(int rate_idx);
+    bool set_fixed_rate_netlink(int rate_idx);
 
     void cleanup();
 
@@ -26,7 +26,7 @@ private:
     std::string interface_;
     bool is_initialized_;
 
-    // Mappa l'indice DCC (3, 6, 12) sul numero di bitrate desiderato (24, 12, 6)
+    // DCC values are legacy rate labels in Mbps, not MCS indexes.
     int map_rate_index(int rate_idx) const;
 };
 

@@ -1,5 +1,6 @@
 #include "cam_message.h"
 #include "UtilsEncode/utils.h"
+#include "common/its_time.h"
 
 #include <chrono>
 #include <cmath>
@@ -59,7 +60,7 @@ std::uint64_t rmc_timestamp(const std::string& time, const std::string& date) {
         const auto digits = time.substr(7, 3);
         fraction = std::stoul(digits + std::string(3 - digits.size(), '0'));
     }
-    return static_cast<std::uint64_t>(seconds - 1072915200) * 1000 + fraction;
+    return its::from_unix_ms(static_cast<std::int64_t>(seconds) * 1000 + fraction);
 }
 template<class T> T* allocate() {
     auto* value = static_cast<T*>(std::calloc(1, sizeof(T)));
@@ -104,9 +105,7 @@ bool parse_rmc(const std::string& sentence, Position& position) {
 }
 
 std::uint64_t timestamp_ms() {
-    const auto unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    return static_cast<std::uint64_t>(unix_ms - 1072915200000LL);
+    return its::now_ms();
 }
 
 std::vector<std::uint8_t> encode(const Position& position, std::uint32_t station_id,
@@ -186,7 +185,11 @@ std::vector<std::uint8_t> make_frame(const Position& p, std::uint32_t station_id
     be32(out, static_cast<std::uint32_t>(timestamp));
     be32(out, static_cast<std::uint32_t>(p.latitude));
     be32(out, static_cast<std::uint32_t>(p.longitude));
-    be16(out, p.speed == 16383 ? 32767 : p.speed);
+    // CAM's unavailable sentinel has no equivalent in GN's signed 15-bit S
+    // field: 0x7fff would mean -0.01 m/s. Use zero as the unknown-value
+    // fallback (EPV initialization, EN 302 636-4-1, 8.2.3); keep the original
+    // SpeedValue_unavailable in the CAM payload encoded above.
+    be16(out, p.speed == 16383 ? 0 : p.speed);
     // GN LPV has no CAM HeadingValue_unavailable (3601) sentinel.
     // Use GN's zero fallback for unknown direction and for a stationary ITS-S
     // (EN 302 636-4-1, 8.2.3); normalize CAM's 360 degrees to north (0).

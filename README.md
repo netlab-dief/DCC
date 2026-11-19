@@ -1,8 +1,9 @@
-# DCC — Distributed Congestion Control
+# DCC — Decentralized Congestion Control
 
-C++17 congestion control for Linux ITS-G5 experiments. DCC measures Channel Busy
+C++17 congestion control for Linux ITS-G5 experiments, with separate DCC_ACC,
+DCC_NET and DCC_CROSS entities and a CAM Facilities adapter. DCC measures Channel Busy
 Ratio (CBR), requests radio power and legacy bitrate settings, and admits packets
-through a internal airtime gate. It includes a CAM generator, optional neighbour
+through an internal airtime gate. It includes a CAM generator, optional neighbour
 load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
 
 ## Documentation
@@ -12,26 +13,29 @@ load exchange (DCC_NET), CSV telemetry and a terminal dashboard.
 | [Usage](docs/usage.md) | Installation, every command-line option, controller settings, telemetry, internal admission and troubleshooting |
 | [CAM](cam/README.md) | Source data, generation rules, frame format, EDCA, estimated airtime and limitations |
 | [DCC_NET](docs/dcc-net.md) | Neighbour reception, global CBR, DCC-MCO encoding, radio requirements and validation |
+| [Standards profile](docs/standards.md) | Fixed ETSI versions, requirement mapping and explicit project policies |
 | [Architecture](docs/architecture.md) | Modules, ownership, threads, timing, admission and failure handling |
+| [Field validation](docs/field-validation.md) | Real GPS, two-node DCC_NET, packet capture and acceptance checks |
+| [Radio validation](docs/radio-validation.md) | Completed hardware checks, CAM capture results and remaining limits |
 
 ## Repository layout
 
 | Directory | Contents |
 | --- | --- |
 | `src/app/` | Executable entry point |
-| `src/dcc/` | Controllers, manager and internal airtime gate |
+| `src/dcc/` | Access/Cross entities, Facilities adapter, contracts and shared airtime gate |
 | `src/radio/` | CBR acquisition and radio configuration |
-| `src/net/` | DCC_NET state and monitor receiver |
+| `src/net/` | DCC_NET entity, neighbour state and monitor receiver |
 | `src/common/` | Shared logging, utilities and data definitions |
 | `cam/` | Existing CAM implementation, ASN.1 sources, schemas and guide; preserved in place |
 | `tools/` | Python dashboard and synthetic CBR generator |
 | `tests/` | C++ and Python test sources |
-| `docs/` | Usage, architecture and DCC_NET guides |
+| `docs/` | Usage, architecture, standards, field procedures and validation reports |
 | `build/` | Generated objects, dependencies, test binaries and compatibility headers |
 
 The main executable remains `./dcc`. Commands below run from the repository
 root; telemetry and synthetic input paths still use the working directory.
-Root-level documentation forwarding pages preserve links from `cam/README.md`.
+Root-level documentation forwarding pages preserve earlier links.
 
 ## Build
 
@@ -66,8 +70,18 @@ sudo ./dcc <network_interface> <radiotap_interface> [options]
 
 | Argument | Role |
 | --- | --- |
-| `network_interface`, e.g. `wlan0` | CBR survey and TX power configuration |
-| `radiotap_interface`, e.g. `wlan1` | Legacy bitrate configuration, CAM injection and optional DCC_NET reception |
+| `network_interface`, e.g. `wlan0` | CBR survey, TX power and legacy bitrate configuration |
+| `radiotap_interface`, e.g. `wlan2` | CAM injection and optional DCC_NET reception |
+
+Power and bitrate target the first interface. OCB uses the multicast-rate command;
+other modes use a 5 GHz legacy mask. The second argument is only for radiotap I/O.
+Without CAM/NET, `sudo ./dcc wlan0 wlan0` is sufficient. With CAM/NET, `wlan2`
+must be a monitor on the controlled PHY, not an unrelated managed radio.
+See [interface setup and hardware checks](docs/usage.md).
+
+The validated setup uses `wlan0` in OCB mode and `wlan2` as its monitor on
+phy0, at 5900 MHz / 10 MHz. `wlan1` on that host is a separate managed radio.
+Names and channel settings on another host must be checked with `iw dev`.
 
 Configure the radio and channel before starting DCC. CAM and DCC_NET require a
 monitor interface supporting radiotap injection/reception. The measured channel
@@ -78,20 +92,20 @@ compatible driver support.
 
 ```bash
 # Reactive control, without CAM generation (default)
-sudo ./dcc wlan0 wlan1
+sudo ./dcc wlan0 wlan2
 
 # Adaptive delta controller, selected by the historical --limeric flag
-sudo ./dcc wlan0 wlan1 --limeric
+sudo ./dcc wlan0 wlan2 --limeric
 
 # CAMs from a stationary sample position or a GPS serial device
-sudo ./dcc wlan0 wlan1 --cam-static
-sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --cam-static
+sudo ./dcc wlan0 wlan2 --limeric --cam-gps /dev/ttyACM0
 
 # Nominal 100 ms CAM generation, including while stationary
-sudo ./dcc wlan0 wlan1 --cam-static --cam-force-100ms
+sudo ./dcc wlan0 wlan2 --cam-static --cam-force-100ms
 
 # Neighbour load exchange with integrated CAM transmission
-sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
+sudo ./dcc wlan0 wlan2 --dcc-net --cam-static
 ```
 
 Both interface arguments are always required. CAM generation is disabled until
@@ -157,7 +171,7 @@ python3 tools/cbr_generator.py --output fake_cbr_value
 From the same working directory, start reactive control in another terminal:
 
 ```bash
-sudo ./dcc wlan0 wlan1 --fake-cbr
+sudo ./dcc wlan0 wlan2 --fake-cbr
 ```
 
 The generator defaults to `cbr`, so the explicit output filename matters.
@@ -169,9 +183,15 @@ make test
 ```
 
 Tests cover controllers, sampling, the shared gate, CAM encoding/generation,
-DCC_NET, the dashboard and Python utilities. They require no radio. CLI tests skip when the application binary is
+DCC_NET, architecture integration, manager lifecycle with a simulated radio, the dashboard and Python utilities. They require no radio. CLI tests skip when the application binary is
 absent. GitHub Actions builds and tests on Ubuntu. Hardware behaviour still
 requires validation with the intended Linux driver and radio.
+
+The [2026-11-19 CAM validation](docs/cam-validation-2026-11-19.md) recorded
+795 CAMs with matching successful driver TX statuses across seven radio runs.
+Same-PHY capture does not establish reception by a second station. Follow the
+[field procedure](docs/field-validation.md) to validate GPS input and neighbour
+exchange with an independent node.
 
 ## Authors
 

@@ -1,6 +1,7 @@
 #include "cam/cam_message.h"
 #include "cam/cam_sender.h"
 #include "net/dcc_net.h"
+#include "common/its_time.h"
 extern "C" {
 #include "CAM.h"
 #include "per_decoder.h"
@@ -38,9 +39,31 @@ void test_position() {
     require(!cam::parse_rmc(nmea("GPRMC,161151.00,A,4437.0,N,01056.0,E,nan,0,210325,,,A"), p), "nonfinite speed rejected");
     require(cam::parse_rmc(nmea("GPRMC,000000.123,A,0000.0,N,00000.0,E,0,0,010104,,,A"), p) &&
         p.sample_timestamp_ms == 123, "RMC measurement timestamp uses ITS epoch and fractional milliseconds");
+    require(cam::parse_rmc(nmea("GPRMC,000000.000,A,0000.0,N,00000.0,E,0,0,010107,,,A"), p) &&
+        p.sample_timestamp_ms == 94694401000ULL, "ETSI 2007 timestamp example includes one leap second");
+    require(cam::parse_rmc(nmea("GPRMC,000000.123,A,0000.0,N,00000.0,E,0,0,010117,,,A"), p) &&
+        p.sample_timestamp_ms == 410313605123ULL, "RMC after 2016 insertion includes all five leap seconds");
     require(!cam::parse_rmc(nmea("GPRMC,000000.00,A,0000.0,N,00000.0,E,0,0,290225,,,A"), p), "invalid calendar date rejected");
     require(cam::parse_rmc(nmea("GPRMC,235959.999,A,0000.0,N,00000.0,E,0,0,290224,,,A"), p), "valid leap day accepted");
     require(!cam::parse_rmc(nmea("GPRMC,250000.00,A,0000.0,N,00000.0,E,0,0,010124,,,A"), p), "invalid UTC hour rejected");
+}
+
+void test_its_clock() {
+    require(its::from_unix_ms(1072915200000LL) == 0, "ITS epoch has zero offset");
+    constexpr std::int64_t dates[]{1136073600000LL, 1230768000000LL, 1341100800000LL,
+        1435708800000LL, 1483228800000LL};
+    for (unsigned i = 0; i < 5; ++i) {
+        const auto date = dates[i];
+        require(its::from_unix_ms(date - 1) == static_cast<std::uint64_t>(date - 1 - its::unix_epoch_ms) + i * 1000,
+            "before insertion uses preceding offset");
+        require(its::from_unix_ms(date) == static_cast<std::uint64_t>(date - its::unix_epoch_ms) + (i + 1) * 1000,
+            "effective UTC midnight adds the inserted second");
+    }
+    bool rejected = false;
+    try { its::from_unix_ms(its::unix_epoch_ms - 1); } catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "pre-epoch timestamps cannot underflow");
+    const auto before = its::now_ms();
+    require(cam::timestamp_ms() >= before && cam::timestamp_ms() - before < 1000, "CAM clock uses common ITS conversion");
 }
 
 void test_encoding() {
@@ -117,6 +140,38 @@ void test_encoding() {
     }
 }
 
+void test_gn_speed_mapping() {
+    const std::array<std::uint8_t, 6> mac{2, 3, 4, 5, 6, 7};
+    struct SpeedCase { int cam_speed; unsigned gn_speed; };
+    for (const auto& test : {SpeedCase{0, 0}, SpeedCase{1, 1}, SpeedCase{514, 514},
+                             SpeedCase{16382, 16382}, SpeedCase{16383, 0}}) {
+        cam::Position position;
+        position.speed = test.cam_speed;
+        position.heading = 1234;
+        for (bool with_rate : {false, true}) {
+            auto frame = cam::make_frame(position, 4316, mac, 0, 12345);
+            if (with_rate) cam::set_legacy_rate(frame, 12);
+            const auto rt = cam::radiotap_length(frame);
+            const auto speed_offset = rt + 66; // QoS MAC + SNAP + GN headers/LPV prefix.
+            require(frame[speed_offset] * 256U + frame[speed_offset + 1] == test.gn_speed,
+                "GN speed uses zero for unknown and preserves available values including upper boundary");
+            CAM_t* payload = nullptr;
+            const auto cam_offset = rt + 78;
+            const auto result = uper_decode_complete(nullptr, &asn_DEF_CAM,
+                reinterpret_cast<void**>(&payload), frame.data() + cam_offset, frame.size() - cam_offset);
+            require(result.code == RC_OK && payload, "decode CAM from speed regression frame");
+            require(payload->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency
+                .speed.speedValue == test.cam_speed, "GN speed fallback does not change CAM speed/unavailable sentinel");
+            ASN_STRUCT_FREE(asn_DEF_CAM, payload);
+        }
+    }
+    cam::Position missing_speed;
+    require(cam::parse_rmc(nmea("GPRMC,161151.00,A,4437.75625,N,01056.87714,E,,123.4,210325,,,A"), missing_speed) &&
+        missing_speed.speed == 16383, "RMC without speed produces CAM unavailable");
+    const auto frame = cam::make_frame(missing_speed, 4316, mac, 0, 12345);
+    require(frame[74] == 0 && frame[75] == 0, "RMC missing speed never produces a negative GN velocity");
+}
+
 void test_admission() {
     using namespace std::chrono_literals;
     AirtimeGate gate;
@@ -124,20 +179,20 @@ void test_admission() {
     cam::Telemetry telemetry;
     int calls = 0;
     gate.configure(0.03, 100ms, AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(gate, 1, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "admitted CAM enqueued");
+    require(cam::Sender::transmit(gate, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "admitted CAM enqueued");
     require(calls == 1 && telemetry.snapshot().accounted == 1 && telemetry.snapshot().estimated_airtime_us == 500,
         "successful enqueue accounts reserved estimate without hardware feedback");
     require(gate.suggested_interval_ms() == 100, "estimated airtime accounted");
     require(gate.handle("ADMIT 2 500", AirtimeGate::Clock::now()).rfind("WAIT 2 ", 0) == 0, "next packet must wait");
     stopping = true;
-    require(!cam::Sender::transmit(gate, 2, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
+    require(!cam::Sender::transmit(gate, 500, [&] { ++calls; }, stopping, {}, {}, &telemetry), "shutdown cancels waiting transmission");
     require(calls == 1 && telemetry.snapshot().tx_errors == 0, "shutdown does not send or count an error");
     AirtimeGate failed;
     failed.configure(0.03, 100ms, AirtimeGate::Clock::now());
     stopping = false;
     bool threw = false;
     try {
-        cam::Sender::transmit(failed, 1, 500, [] { throw std::runtime_error("driver enqueue failed"); }, stopping, {}, {}, &telemetry);
+        cam::Sender::transmit(failed, 500, [] { throw std::runtime_error("driver enqueue failed"); }, stopping, {}, {}, &telemetry);
     } catch (const std::runtime_error&) { threw = true; }
     require(threw && telemetry.snapshot().accounted == 1 && telemetry.snapshot().tx_errors == 1,
         "failed enqueue is not counted as successful estimated accounting");
@@ -145,19 +200,19 @@ void test_admission() {
     AirtimeGate invalid_estimate;
     invalid_estimate.configure(0.03, 100ms, AirtimeGate::Clock::now());
     try {
-        cam::Sender::transmit(invalid_estimate, 1, 0, [&] { ++calls; }, stopping, {}, {}, &telemetry);
+        cam::Sender::transmit(invalid_estimate, 0, [&] { ++calls; }, stopping, {}, {}, &telemetry);
         require(false, "invalid estimate must fail");
     } catch (const std::runtime_error&) {}
     require(calls == 1 && telemetry.snapshot().tx_errors == 2, "invalid estimate rejected before driver enqueue");
     AirtimeGate source_gate;
     source_gate.configure(0.03, 100ms, AirtimeGate::Clock::now());
     int fixes = 0;
-    require(cam::Sender::transmit(source_gate, 1, 500, [&] {
+    require(cam::Sender::transmit(source_gate, 500, [&] {
         require(fixes == 3, "no transmission until source is ready");
     }, stopping, [&] { return ++fixes == 3; }), "source refreshed while awaiting admission");
     AirtimeGate variable_size;
     variable_size.configure(0.03, 25ms, AirtimeGate::Clock::now());
-    require(cam::Sender::transmit(variable_size, 1, 1, [] {}, stopping,
+    require(cam::Sender::transmit(variable_size, 1, [] {}, stopping,
         [] { return true; }, [] { return 2000; }), "reserve size of selected CAM including LF");
     require(variable_size.suggested_interval_ms() == 67, "reservation uses selected packet rather than stale size estimate");
 }
@@ -374,7 +429,7 @@ void test_generation_during_driver_enqueue() {
     auto waiting_signal = waiting.get_future();
     auto completion_signal = completed.get_future();
     auto tx = std::async(std::launch::async, [&] {
-        cam::Sender::transmit(gate, 1, 500, [&] {
+        cam::Sender::transmit(gate, 500, [&] {
             buffer.submitted(initial.version);
             waiting.set_value();
             completion_signal.wait();
@@ -556,7 +611,7 @@ void test_airtime_estimation() {
         gate.configure(0.03, std::chrono::milliseconds(25), AirtimeGate::Clock::now());
         auto selected = frame;
         cam::set_legacy_rate(selected, rates[i]);
-        require(cam::Sender::transmit(gate, i + 1, 1, [&] { ++sends; telemetry.submitted(0, 0); }, stopping,
+        require(cam::Sender::transmit(gate, 1, [&] { ++sends; telemetry.submitted(0, 0); }, stopping,
             [] { return true; }, [&] { return cam::estimate_airtime_us(selected, selected[8] / 2); }, &telemetry),
             "multiple CAMs enqueue with changing bitrates and no feedback service");
     }
@@ -566,6 +621,8 @@ void test_airtime_estimation() {
 }
 } // namespace
 int main() {
+    test_its_clock();
+    test_gn_speed_mapping();
     test_position(); test_encoding(); test_admission(); test_generation_timing();
     test_generation_policy(); test_generation_buffer(); test_low_frequency_encoding();
     test_generation_during_driver_enqueue();

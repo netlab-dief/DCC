@@ -11,12 +11,15 @@ the same process.
 ## Quick start
 
 Build with `make` in the repository root. Linux, raw-socket privileges and a
-monitor interface configured for radiotap injection are required.
+monitor interface configured for radiotap injection are required. Here `wlan0`
+is the controlled radio and `wlan2` is a monitor on the same PHY. Power and OCB
+multicast bitrate target `wlan0`; each injected CAM carries its own radiotap
+RATE. See [interface setup](../docs/usage.md) before running these examples.
 
 ```bash
-sudo ./dcc wlan0 wlan1 --cam-static
-sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0
-sudo ./dcc wlan0 wlan1 --limeric --cam-static --cam-station-id 4316
+sudo ./dcc wlan0 wlan2 --cam-static
+sudo ./dcc wlan0 wlan2 --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --limeric --cam-static --cam-station-id 4316
 ```
 
 Select one source. Station ID defaults to `4316`, QoS priority to `3`, and normal
@@ -24,6 +27,9 @@ vehicle generation is enabled unless `--cam-force-100ms` is supplied. See the
 [option reference](../USAGE.md#command-line-reference) for validation and defaults.
 
 ## Source data and timestamps
+
+For device discovery, a serial-data check and comparison with received CAMs,
+see the [real GPS procedure](../docs/field-validation.md#real-gps-input).
 
 | Source | Behaviour |
 | --- | --- |
@@ -36,8 +42,11 @@ Fixes more than two seconds behind or ahead of host UTC are rejected for
 message generation. Date validation includes leap years. Synchronize the host
 UTC clock before use.
 
-CAM reference-position time comes from RMC date/time relative to the 2004 epoch,
-modulo 65536 ms. Static CAMs and GeoNetworking timestamps use system UTC.
+CAM reference-position time comes from RMC date/time, converted to elapsed TAI
+milliseconds since the ITS epoch (2004-01-01 00:00:00 UTC), modulo 65536 ms.
+Static CAMs and GeoNetworking use the same conversion from the system UTC clock.
+The shared conversion includes the five leap-second insertions from 2004 through
+2017; its table must be extended when future insertions become effective.
 Coordinates use 10⁻⁷ degrees, speed uses cm/s and heading uses 0.1° units.
 RMC provides position, speed and heading without measurement confidence data.
 
@@ -67,6 +76,12 @@ CAM retains `3601` for unavailable heading, while GN uses zero as a fallback.
 GN heading is also zero for a stationary station. Available 360° headings are
 normalized to 0°. For a moving source with unknown heading, GN zero is a
 fallback rather than a northbound measurement; CAM still signals unavailable.
+
+Speed is also mapped separately. CAM retains `16383` (`SpeedValue_unavailable`)
+when RMC supplies no speed; GN uses zero as an unknown-value fallback. The old
+`0x7fff` encoding would represent -0.01 m/s in GN's signed 15-bit speed field.
+GN zero alone therefore does not prove standstill. Available speeds are preserved
+in both encodings, including the maximum available CAM value of 16382 cm/s.
 
 ## Generation policy
 
@@ -111,8 +126,8 @@ remains 1000 ms in every state.
 ### Forced 100 ms generation
 
 ```bash
-sudo ./dcc wlan0 wlan1 --cam-static --cam-force-100ms
-sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0 --cam-force-100ms
+sudo ./dcc wlan0 wlan2 --cam-static --cam-force-100ms
+sudo ./dcc wlan0 wlan2 --limeric --cam-gps /dev/ttyACM0 --cam-force-100ms
 ```
 
 `--cam-force-100ms` requires a CAM source and selects nominal 100 ms generation
@@ -156,8 +171,8 @@ selection/compression is not implemented.
 source mode:
 
 ```bash
-sudo ./dcc wlan0 wlan1 --cam-static --cam-priority 6
-sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0 --cam-priority 4
+sudo ./dcc wlan0 wlan2 --cam-static --cam-priority 6
+sudo ./dcc wlan0 wlan2 --cam-gps /dev/ttyACM0 --cam-priority 4
 ```
 
 | User priority / TID | EDCA category |
@@ -210,8 +225,8 @@ This estimates one broadcast transmission without ACK. It excludes backoff,
 driver waiting and unobserved extra attempts, and assumes the driver honors the
 requested RATE. Validate those assumptions on the intended radio.
 
-The sender obtains `ADMIT` from the internal gate, injects with
-`AF_PACKET/SOCK_RAW`, and calls `ACCOUNT` with estimated airtime after a complete
+The sender obtains a channel-wide admission ticket from the internal gate, injects
+with `AF_PACKET/SOCK_RAW`, and accounts the estimated airtime after a complete
 successful `sendto()`. This closes the reservation without waiting for PHY
 feedback; it does not prove hardware completion or reception.
 
@@ -222,8 +237,8 @@ recovery semantics. The sender needs no external client or feedback service.
 ## Optional DCC-MCO extension
 
 ```bash
-sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
-sudo ./dcc wlan0 wlan1 --dcc-net --limeric --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --dcc-net --cam-static
+sudo ./dcc wlan0 wlan2 --dcc-net --limeric --cam-gps /dev/ttyACM0
 ```
 
 Without NET, the four SHB media-dependent bytes remain zero. With NET, the sender
@@ -254,3 +269,7 @@ uncertain-send failure. No radio is required for these tests.
 Validate full Linux builds, injection, queue mapping, bitrate application and
 airtime estimates against the intended driver and radio. The current
 implementation does not certify the complete ITS stack or hardware.
+
+See the [completed CAM capture report](../docs/cam-validation-2026-11-19.md)
+and the [field validation procedure](../docs/field-validation.md) for interpreting
+local TX statuses and checking reception on an independent node.

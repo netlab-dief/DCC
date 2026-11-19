@@ -1,4 +1,6 @@
 #include "common/utils.h"
+#include "common/its_time.h"
+#include "common/bounded_io.h"
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -16,12 +18,6 @@
 #include <netlink/attr.h>
 #include <sstream>
 #include <iomanip>
-
-// Epoch time at 2004-01-01 (in ms)
-#define TIME_SHIFT_MILLI 1072915200000
-
-// UTC epoch time at 2004-01-01 00:00:00 (in ms)
-#define ITS_EPOCH_TIME_MILLI TIME_SHIFT_MILLI // Equal to the TIME_SHIFT_MILLI; can be updated to a different value for future CPM versions, if needed
 
 // Size of the popen iw buffer, to read the RSSI given a MAC address
 // This is currently a bit oversized -> need to define a "more tight" size in the near future
@@ -87,51 +83,15 @@ uint64_t get_timestamp_ns(void) {
 }
 
 uint64_t get_timestamp_ms_gn(void) {
-	time_t seconds;
-	uint64_t microseconds;
-	struct timespec now;
-
-	if(clock_gettime(CLOCK_TAI, &now) == -1) {
-		perror("Cannot get the current microseconds TAI timestamp");
-		return -1;
-	}
-
-	seconds=now.tv_sec;
-	microseconds=round(now.tv_nsec/1e3);
-
-	// milliseconds, due to the rounding operation, shall not exceed 999999
-	if(microseconds > 999999) {
-		seconds++;
-		microseconds=0;
-	}
-
-	return (static_cast<uint64_t>(floor((seconds*1000000+microseconds)/1000.0))-TIME_SHIFT_MILLI)%4294967296;
+    return static_cast<std::uint32_t>(its::now_ms());
 }
 
 uint64_t get_timestamp_ms_cpm(void) {
-    time_t seconds;
-    uint64_t microseconds;
-    struct timespec now;
-
-    if(clock_gettime(CLOCK_TAI, &now) == -1) {
-        perror("Cannot get the current microseconds TAI timestamp");
-        return -1;
-    }
-
-    seconds=now.tv_sec;
-    microseconds=round(now.tv_nsec/1e3);
-
-    // milliseconds, due to the rounding operation, shall not exceed 999999
-    if(microseconds > 999999) {
-        seconds++;
-        microseconds=0;
-    }
-
-    return (static_cast<uint64_t>(floor((seconds*1000000+microseconds)/1000.0))-ITS_EPOCH_TIME_MILLI)%4398046511103;
+    return its::now_ms() % (std::uint64_t{1} << 42);
 }
 
 uint64_t get_timestamp_ms_cam(void) {
-	return (static_cast<uint64_t>(floor(get_timestamp_us()/1000.0))-TIME_SHIFT_MILLI)%65536;
+    return its::now_ms() & 65535U;
 }
 
 int timer_fd_create(struct pollfd &pollfd,int &clockFd,uint64_t time_us) {
@@ -235,10 +195,8 @@ nl_sock_info_t open_nl_socket(std::string interface_name, int timeout_ms) {
 
     // Bound acquisition latency, including family resolution, when requested.
     if (timeout_ms > 0) {
-        timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
         const int fd = nl_socket_get_fd(nl_sock_info.nl_sock);
-        if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
-            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+        if (!set_io_timeout(fd, timeout_ms)) {
             nl_socket_free(nl_sock_info.nl_sock);
             nl_sock_info.sock_valid = false;
             return nl_sock_info;

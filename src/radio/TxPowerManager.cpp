@@ -1,5 +1,6 @@
 #include "common/console_log.h"
 #include "radio/TxPowerManager.h"
+#include "common/bounded_io.h"
 #include <iostream>
 #include <net/if.h> // Per if_nametoindex
 #include <netlink/netlink.h>
@@ -29,9 +30,10 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
     }
 
     if (bounded_io) {
-        timeval timeout{0, 80000};
-        setsockopt(nl_socket_get_fd(nl_sock), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        setsockopt(nl_socket_get_fd(nl_sock), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        if (!set_io_timeout(nl_socket_get_fd(nl_sock))) {
+            nl_socket_free(nl_sock);
+            return false;
+        }
     }
 
     // 2. Risoluzione dell'ID della famiglia nl80211
@@ -58,17 +60,15 @@ bool TxPowerManager::set_tx_power(const std::string& interface_name, int power_d
         return false;
     }
 
-    // Specifica il comando SET_WIPHY per modificare i parametri hardware
-    genlmsg_put(msg, NL_AUTO_PORT, NL_AUTO_SEQ, nl80211_id, 0, 0, NL80211_CMD_SET_WIPHY, 0);
-
-    // 5. Inserimento degli attributi (Payload)
-    nla_put_u32(msg, NL80211_ATTR_IFINDEX, ifindex);
-    
-    // Imposta la modalità su "Fissa"
-    nla_put_u32(msg, NL80211_ATTR_WIPHY_TX_POWER_SETTING, NL80211_TX_POWER_FIXED);
-    
-    // Il kernel Linux si aspetta il valore in mBm (milli-Bel-milliwatts). 1 dBm = 100 mBm.
-    nla_put_u32(msg, NL80211_ATTR_WIPHY_TX_POWER_LEVEL, power_dbm * 100);
+    // SET_WIPHY uses a fixed power setting in mBm (1 dBm = 100 mBm).
+    if (!genlmsg_put(msg, NL_AUTO_PORT, NL_AUTO_SEQ, nl80211_id, 0, 0, NL80211_CMD_SET_WIPHY, 0) ||
+        nla_put_u32(msg, NL80211_ATTR_IFINDEX, ifindex) < 0 ||
+        nla_put_u32(msg, NL80211_ATTR_WIPHY_TX_POWER_SETTING, NL80211_TX_POWER_FIXED) < 0 ||
+        nla_put_u32(msg, NL80211_ATTR_WIPHY_TX_POWER_LEVEL, power_dbm * 100) < 0) {
+        nlmsg_free(msg);
+        nl_socket_free(nl_sock);
+        return false;
+    }
 
     // 6. Invio del messaggio
     int err = nl_send_auto_complete(nl_sock, msg);
@@ -100,9 +100,7 @@ std::optional<double> TxPowerManager::get_tx_power(const std::string& interface_
     std::optional<double> result;
     auto cleanup = [&] { nl_socket_free(socket); return result; };
     if (genl_connect(socket) < 0) return cleanup();
-    timeval timeout{0, 80000};
-    setsockopt(nl_socket_get_fd(socket), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(nl_socket_get_fd(socket), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    if (!set_io_timeout(nl_socket_get_fd(socket))) return cleanup();
     const auto family = genl_ctrl_resolve(socket, "nl80211");
     const auto index = if_nametoindex(interface_name.c_str());
     if (family < 0 || !index) return cleanup();

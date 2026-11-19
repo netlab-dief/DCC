@@ -29,7 +29,7 @@ struct LowFrequencyData {
 
 // Accepts a single RMC sentence with a valid fix and checksum.
 bool parse_rmc(const std::string& sentence, Position& position);
-std::uint64_t timestamp_ms(); // Milliseconds since 2004-01-01 UTC.
+std::uint64_t timestamp_ms(); // Elapsed TAI milliseconds since the ITS epoch.
 std::vector<std::uint8_t> encode(const Position& position, std::uint32_t station_id,
                                std::uint64_t timestamp, const LowFrequencyData* low_frequency = nullptr);
 const char* edca_queue(std::uint8_t priority); // 802.1D user priority, 0–7.
