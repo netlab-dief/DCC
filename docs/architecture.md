@@ -40,9 +40,9 @@ flowchart LR
 
 The Facilities component is an adapter for one existing CAM service. It does not
 claim a full multi-service DCC_FAC allocator or Release 2 support. DENM/CPM and a
-full GeoNetworking router are not added by this change.
+full GeoNetworking router are outside the implementation scope.
 
-`DccManager` no longer owns controller algorithms or Netlink objects. The radio
+`DccManager` delegates controller algorithms and Netlink objects. The radio
 backend is injectable: the real manager, ACC/CROSS/NET ports and lifecycle can be
 tested with simulated hardware on either macOS or Linux.
 
@@ -100,7 +100,9 @@ mutexes. No controller or NET-state lock is held during radio I/O. Cached radio
 requests avoid repeated Netlink configuration for unchanged values. NET requires
 configured-power readback before admission. A failed configuration/readback
 closes admission and propagates through `check_cam()` even with CAM disabled.
-Bitrate-mask errors propagate just like power errors. Netlink send/receive
+Rate configuration targets the survey/power interface. OCB uses the multicast
+rate command for broadcast traffic; other modes use the legacy bitrate mask.
+Rate errors propagate just like power errors. Netlink send/receive
 waits have checked 80 ms socket timeouts, including family resolution. ACK success
 confirms configuration acceptance, not the over-air bitrate; the packet-specific
 radiotap RATE remains the basis of the estimate.
@@ -143,7 +145,7 @@ Forwarding headers preserve CAM's historical relative include paths.
 
 `make test` includes eight portable C++ suites, including architecture integration
 and the real manager with a simulated radio, plus Python tests. Linux also runs
-synthetic Netlink survey parsing and bitrate failure tests. New checks exercise global
+synthetic Netlink survey parsing and bitrate failure tests. These checks exercise global
 input selection, missing/replayed samples, UTC recovery, resource units, multiple
 producers sharing one debt, power readback failure, expiry during configuration,
 NET resource ports and restart/error propagation without CAM.
@@ -153,3 +155,7 @@ builds the Linux application before running tests. Injection, configured versus
 radiated power, queue mapping, bitrate and actual airtime still require the target
 radio/driver. See the [standards profile](standards.md) for requirements and
 explicit project choices; software tests do not certify the complete ITS stack.
+
+See [device radio validation](radio-validation.md) for the configuration checks
+and CAM TX-status capture results. The [field procedure](field-validation.md)
+covers real GPS and independent neighbour reception still requiring validation.

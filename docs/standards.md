@@ -74,3 +74,8 @@ applicable normative limits.
 The initial architecture implements the separation and data contracts. It does
 not add DENM/CPM generators, full GN routing, secured-GN decapsulation, a complete
 multi-service Facilities allocator or hardware certification.
+
+For evidence boundaries, see [completed radio validation](radio-validation.md)
+and [field validation](field-validation.md). Successful kernel configuration and
+same-PHY TX statuses do not establish received delivery, radiated EIRP or
+compliance with the over-air limits listed above.

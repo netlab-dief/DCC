@@ -13,7 +13,9 @@ public:
     void start() override {
         from_file_ = false;
         reader_.setupCBRReader(false, survey_);
-        rate_.setup_rate_manager(monitor_);
+        // Configure the controlled radio, not the radiotap injection interface.
+        // A monitor interface may reject SET_TX_BITRATE_MASK entirely.
+        rate_.setup_rate_manager(survey_);
     }
     float read_cbr() override {
         float value = -1;

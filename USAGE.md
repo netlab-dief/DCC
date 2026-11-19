@@ -2,7 +2,7 @@
 
 This guide has moved to [docs/usage.md](docs/usage.md).
 
-This compatibility page preserves links from the unchanged `cam/` directory.
+This compatibility page preserves links from earlier repository layouts.
 
 ## Command-line reference
 

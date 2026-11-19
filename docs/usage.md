@@ -4,7 +4,7 @@
 [Architecture](architecture.md)
 
 DCC controls application-level access to one ITS-G5 channel. It measures CBR,
-updates a reactive or adaptive controller, requests radio settings and exposes a
+updates a reactive or adaptive controller, requests radio settings and exposes an
 internal per-packet airtime gate. Integrated CAM generation is optional.
 
 ## Contents
@@ -21,6 +21,7 @@ internal per-packet airtime gate. Integrated CAM generation is optional.
 - [Synthetic CBR](#synthetic-cbr)
 - [Troubleshooting](#troubleshooting)
 - [Tests and hardware validation](#tests-and-hardware-validation)
+- [Opt-in radio hardware check](#opt-in-radio-hardware-check)
 
 ## Installation and build
 
@@ -62,15 +63,61 @@ The program always takes two positional arguments:
 
 | Argument | Operations |
 | --- | --- |
-| First: network interface, e.g. `wlan0` | Active-channel survey counters and TX power configuration |
-| Second: radiotap interface, e.g. `wlan1` | Legacy bitrate configuration, integrated CAM injection and optional SHB reception |
+| First: network interface, e.g. `wlan0` | Active-channel survey counters, TX power and legacy bitrate configuration |
+| Second: radiotap interface, e.g. `wlan2` | Integrated CAM injection and optional SHB reception |
 
-The channel measured on the first interface must represent the transmitter
-controlled through the second. Two unrelated radios do not establish this
-relationship. With CAM or DCC_NET, configure the second interface as a monitor
-with radiotap support before launch. DCC does not select a channel, create monitor
-mode or configure channel width. Driver support is required for survey counters,
-fixed power, legacy bitrate requests and any enabled injection/reception.
+The first argument is the controlled radio: surveys, TX power and bitrate all
+use it. In OCB mode, bitrate configuration uses `NL80211_CMD_SET_MCAST_RATE`
+for broadcast/multicast traffic; in other modes it uses the 5 GHz legacy mask
+(`NL80211_CMD_SET_TX_BITRATE_MASK`). Interface names are examples, not roles:
+check `iw dev` and the PHY before choosing them.
+
+The second argument is only for CAM injection and DCC_NET reception. Without
+CAM and DCC_NET it is unused; two positional arguments are still required and
+`sudo ./dcc wlan0 wlan0` is valid for local control only. With CAM or DCC_NET,
+use a distinct radiotap monitor on the controlled PHY, for example `wlan2`.
+An unrelated managed interface named `wlan2` is not a substitute for that monitor.
+DCC does not create interfaces or configure mode, channel or width.
+
+For a dedicated radio that supports OCB and is not already joined, an example
+setup matching the validated channel is:
+
+```bash
+sudo ip link set wlan0 down
+sudo iw dev wlan0 set type ocb
+sudo ip link set wlan0 up
+sudo iw dev wlan0 ocb join 5900 10MHz
+iw dev
+```
+
+Run setup with DCC stopped and adapt the channel to your test environment and
+radio support. If the interface is already joined on the intended channel,
+keep that configuration. To change an existing OCB join, use
+`sudo iw dev wlan0 ocb leave` before joining the new channel. A network manager
+must not reconfigure the experimental interface during the run.
+
+For an already joined OCB radio `wlan0`, if the name `wlan2` is free,
+a monitor can be prepared explicitly:
+
+```bash
+sudo iw phy phy0 interface add wlan2 type monitor
+sudo ip link set wlan2 up
+iw dev
+sudo ./dcc wlan0 wlan2 --cam-static
+```
+
+If `wlan2` already exists, check its mode and PHY with `iw dev`; the creation
+command cannot reuse an occupied name. The examples require `wlan2` to be
+the radiotap monitor on the controlled radio.
+Replace `phy0` with the PHY shown for the controlled radio. The monitor shares
+that radio's channel; verify mode, PHY and channel before starting. Do not change
+the interface used for the management connection to monitor mode.
+
+CAM frames carry their own radiotap RATE, updated from the current DCC policy
+at dispatch. The OCB multicast setting does not prove the rate of injected CAMs.
+Rate labels and telemetry preserve the existing legacy-rate conventions; on a
+10 MHz channel, kernel acceptance alone does not establish the physical Mbps.
+Over-air rate and airtime require a receiving radio/capture.
 
 DCC_NET requires both interfaces on the same PHY, a fixed ITS-G5 channel and
 TX-power readback. It validates the PHY relationship through sysfs. Do not change
@@ -80,7 +127,7 @@ See [DCC_NET radio requirements](dcc-net.md#radio-and-power-requirements).
 Radio operations normally require administrator privileges. A typical command is:
 
 ```bash
-sudo ./dcc wlan0 wlan1
+sudo ./dcc wlan0 wlan2
 ```
 
 Interface names in this guide are examples; use the names reported by your host.
@@ -115,8 +162,8 @@ Both interface arguments remain mandatory in synthetic-CBR mode.
 ### Reactive and adaptive control
 
 ```bash
-sudo ./dcc wlan0 wlan1
-sudo ./dcc wlan0 wlan1 --limeric
+sudo ./dcc wlan0 wlan2
+sudo ./dcc wlan0 wlan2 --limeric
 ```
 
 Both modes configure an internal gate for the integrated CAM sender. Select
@@ -126,16 +173,16 @@ Both modes configure an internal gate for the integrated CAM sender. Select
 
 ```bash
 # Stationary sample data, normal generation at 1 Hz
-sudo ./dcc wlan0 wlan1 --cam-static
+sudo ./dcc wlan0 wlan2 --cam-static
 
 # GPS data with adaptive control
-sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --limeric --cam-gps /dev/ttyACM0
 
 # Nominal 10 Hz generation, including while stationary
-sudo ./dcc wlan0 wlan1 --cam-static --cam-force-100ms
+sudo ./dcc wlan0 wlan2 --cam-static --cam-force-100ms
 
 # GPS, forced generation and explicit default priority
-sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0 --cam-force-100ms --cam-priority 3
+sudo ./dcc wlan0 wlan2 --cam-gps /dev/ttyACM0 --cam-force-100ms --cam-priority 3
 ```
 
 Normal generation checks conditions every nominal 10 ms. The first CAM is
@@ -156,18 +203,25 @@ The default frame uses GeoNetworking TC2 and QoS TID 3 (AC_BE). `--cam-priority`
 changes the QoS priority while retaining TC2. See the [CAM guide](../cam/README.md)
 for source validation, containers, EDCA mapping and estimated airtime.
 
+For GPS device discovery, NMEA inspection, UTC checks and a received-payload
+comparison, follow [real GPS validation](field-validation.md#real-gps-input).
+DCC reads the serial device directly at 9600 baud. Do not run another serial
+reader or GPS daemon against the same device while the sender is running.
+
 ### Optional DCC_NET
 
 ```bash
-sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
-sudo ./dcc wlan0 wlan1 --dcc-net --limeric --cam-gps /dev/ttyACM0
-sudo ./dcc wlan0 wlan1 --dcc-net
+sudo ./dcc wlan0 wlan2 --dcc-net --cam-static
+sudo ./dcc wlan0 wlan2 --dcc-net --limeric --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --dcc-net
 ```
 
 The last command receives neighbour load without advertising local load.
 Advertising requires integrated CAMs; NET does not generate extra beacons.
 With the flag enabled, controllers consume global CBR and the main monitor
 continues to show local CBR. See [DCC_NET](dcc-net.md) for aggregation and limits.
+For two-node commands, neighbour expiry, remote-load injection and capture
+filters, see [DCC_NET field validation](field-validation.md#two-node-neighbour-exchange).
 
 ### Console and shutdown
 
@@ -411,7 +465,7 @@ flag, DCC ignores `fake_cbr_value`. Values are fractions in `[0, 1]`:
 
 ```bash
 printf '0.45\n' > fake_cbr_value
-sudo ./dcc wlan0 wlan1 --fake-cbr
+sudo ./dcc wlan0 wlan2 --fake-cbr
 ```
 
 From another terminal, change the value or remove the file to return to survey
@@ -468,6 +522,7 @@ columns `timestamp_iso`, `t_rel_s`, `phase` and `cbr_value`.
 | --- | --- |
 | Missing-argument error (`Errore: Parametri mancanti!`) | Supply both interface names before the options |
 | Interface not found | Inspect `ip link show` and `iw dev`; bring the intended interface up if needed, e.g. `sudo ip link set wlan0 up` |
+| `Operation not supported` setting bitrate | Check the **first** interface and its driver. OCB requires multicast-rate support; other modes require a 5 GHz legacy bitrate mask. The second argument must not be used to select the bitrate radio. |
 | Netlink operation denied | Run with the required privileges; check driver support for fixed power and legacy bitrate on the configured band |
 | Missing build libraries | Check `pkg-config --cflags --libs libnl-3.0 libnl-genl-3.0` and install the development packages above |
 | Synthetic CBR ignored | Use `--fake-cbr`, the exact filename `fake_cbr_value`, the DCC working directory and a fraction such as `0.35`; disable `--limeric` |
@@ -495,11 +550,19 @@ synthetic generator, dashboard and CLI validation.
 CLI tests require a built application binary and skip if it is absent. No radio
 is required.
 
+On Linux the suite runs nine C++ executables and 13 Python tests. The portable
+C++ subset has eight executables; the ninth checks Linux Netlink parsing and
+error handling without live radio configuration.
+
 Validate injection, survey counters, EDCA queue selection, requested bitrate,
 power readback and estimated airtime using the target Linux driver and radio.
 NET field validation should use multiple nodes on one channel and capture SHB
 fields alongside logs. Passing software tests does not certify the ITS stack or
 hardware. GitHub Actions builds the application and runs the tests on Ubuntu.
+Completed device checks and their limits are recorded in
+[radio validation](radio-validation.md). Use the [field procedure](field-validation.md)
+for independent reception and real GPS checks. Optional capture tools on
+Debian/Ubuntu are `tcpdump` and `tshark`; they are not build dependencies.
 
 ## Entity architecture and standards
 
@@ -509,4 +572,31 @@ interfaces. See [architecture](architecture.md) and the fixed
 [standards profile](standards.md) for ownership, deadlines, requirement mapping
 and project-specific choices. Existing CLI switches and CSV column names remain
 available; the default controller remains reactive. Radio configuration failures
-now propagate to the application even when no CAM source is enabled.
+propagate to the application even when no CAM source is enabled.
+
+## Opt-in radio hardware check
+
+```bash
+make build/tests/check_radio_hardware
+sudo ./build/tests/check_radio_hardware wlan0
+```
+
+Run on an OCB radio while DCC is stopped. This changes power to 10, 15 and
+20 dBm and requests legacy labels 6, 9, 12, 18 and 24 for each power. It checks
+kernel ACKs and reads power back, then restores the initial power and requests
+rate 6. The previous multicast rate is not exposed for readback. The test uses
+an absent second interface to check that settings target the first argument.
+It does not transmit CAMs or validate physical over-air bitrate.
+
+Normal DCC shutdown leaves the last configured radio power and bitrate in place.
+Record the initial settings before a radio run. After stopping DCC, restore the
+power required by your setup and use the OCB multicast command for the rate:
+
+```bash
+# Validated host's baseline; adapt power and rate to your own setup.
+sudo iw dev wlan0 set txpower fixed 2300
+sudo iw dev wlan0 set mcast_rate 6
+```
+
+`2300` is in mBm and means 23 dBm. A legacy unicast bitrate mask can return
+`EINVAL` on OCB; it is not a substitute for `set mcast_rate`.

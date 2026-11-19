@@ -90,3 +90,8 @@ test-python:
 clean:
 	rm -rf build
 	rm -f $(TARGET)
+
+# Explicit opt-in hardware diagnostic; excluded from test/test-cpp.
+build/tests/check_radio_hardware: tests/check_radio_hardware.cpp src/radio/dcc_radio.cpp src/radio/rate_manager.cpp src/radio/TxPowerManager.cpp src/radio/CBRReader.cpp src/common/utils.cpp | $(COMPAT_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(TEST_FLAGS) $(NL_CFLAGS) $^ -o $@ $(LDLIBS)

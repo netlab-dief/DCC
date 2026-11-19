@@ -10,9 +10,9 @@ integrated CAMs. It is disabled by default.
 ## Enable DCC_NET
 
 ```bash
-sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
-sudo ./dcc wlan0 wlan1 --dcc-net --limeric --cam-gps /dev/ttyACM0
-sudo ./dcc wlan0 wlan1 --dcc-net
+sudo ./dcc wlan0 wlan2 --dcc-net --cam-static
+sudo ./dcc wlan0 wlan2 --dcc-net --limeric --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --dcc-net
 ```
 
 Only `--dcc-net` enables the feature, with either controller. The last command
@@ -28,7 +28,9 @@ local CBR, and the four reserved SHB media-dependent bytes remain zero.
 
 Use Linux, raw-socket privileges, an ITS-G5 radio and a radiotap monitor already
 configured on the intended channel. The second interface receives SHB and injects
-CAMs; the first supplies surveys and TX power configuration. NET verifies through
+CAMs; the first supplies surveys, TX power and bitrate configuration. OCB broadcast
+rate uses the multicast-rate command; injected CAMs carry radiotap RATE.
+See [interface setup](usage.md) for creating the monitor. NET verifies through
 sysfs that both interfaces share a PHY. It supports one fixed ITS-G5 channel per
 instance and does not configure monitor mode, channel or width. Do not change
 channel, PHY or MAC, perform channel hopping, or modify power from another process
@@ -45,7 +47,7 @@ EIRP = driver-reported configured power + antenna gain − cable loss
 assumes 0 dBi antenna gain and no cable loss.
 
 ```bash
-sudo ./dcc wlan0 wlan1 --dcc-net --dcc-net-eirp-offset-db 2.5 --cam-static
+sudo ./dcc wlan0 wlan2 --dcc-net --dcc-net-eirp-offset-db 2.5 --cam-static
 ```
 
 Advertised EIRP is floored to 1 dBm resolution and saturated to 0–31 dBm.
@@ -208,6 +210,13 @@ check its contribution disappears after one second; test remote congestion
 exceeding local load. Validate configured power, EIRP assumptions, RSSI and actual
 driver behaviour. Software tests alone do not certify radio interoperability or
 complete stack compliance.
+
+The [two-node field procedure](field-validation.md#two-node-neighbour-exchange)
+provides commands, capture filters, neighbour-expiry checks and a synthetic
+remote-load test. Nodes need distinct MAC/GN addresses; changing only the CAM
+station ID does not change NET neighbour identity. Forced 100 ms generation is
+useful for the reception test because normal stationary 1 Hz generation is
+close to the 1000 ms neighbour lifetime and can produce brief expiry gaps.
 
 ## Entity interfaces
 

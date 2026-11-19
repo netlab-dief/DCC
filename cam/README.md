@@ -11,12 +11,15 @@ the same process.
 ## Quick start
 
 Build with `make` in the repository root. Linux, raw-socket privileges and a
-monitor interface configured for radiotap injection are required.
+monitor interface configured for radiotap injection are required. Here `wlan0`
+is the controlled radio and `wlan2` is a monitor on the same PHY. Power and OCB
+multicast bitrate target `wlan0`; each injected CAM carries its own radiotap
+RATE. See [interface setup](../docs/usage.md) before running these examples.
 
 ```bash
-sudo ./dcc wlan0 wlan1 --cam-static
-sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0
-sudo ./dcc wlan0 wlan1 --limeric --cam-static --cam-station-id 4316
+sudo ./dcc wlan0 wlan2 --cam-static
+sudo ./dcc wlan0 wlan2 --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --limeric --cam-static --cam-station-id 4316
 ```
 
 Select one source. Station ID defaults to `4316`, QoS priority to `3`, and normal
@@ -24,6 +27,9 @@ vehicle generation is enabled unless `--cam-force-100ms` is supplied. See the
 [option reference](../USAGE.md#command-line-reference) for validation and defaults.
 
 ## Source data and timestamps
+
+For device discovery, a serial-data check and comparison with received CAMs,
+see the [real GPS procedure](../docs/field-validation.md#real-gps-input).
 
 | Source | Behaviour |
 | --- | --- |
@@ -120,8 +126,8 @@ remains 1000 ms in every state.
 ### Forced 100 ms generation
 
 ```bash
-sudo ./dcc wlan0 wlan1 --cam-static --cam-force-100ms
-sudo ./dcc wlan0 wlan1 --limeric --cam-gps /dev/ttyACM0 --cam-force-100ms
+sudo ./dcc wlan0 wlan2 --cam-static --cam-force-100ms
+sudo ./dcc wlan0 wlan2 --limeric --cam-gps /dev/ttyACM0 --cam-force-100ms
 ```
 
 `--cam-force-100ms` requires a CAM source and selects nominal 100 ms generation
@@ -165,8 +171,8 @@ selection/compression is not implemented.
 source mode:
 
 ```bash
-sudo ./dcc wlan0 wlan1 --cam-static --cam-priority 6
-sudo ./dcc wlan0 wlan1 --cam-gps /dev/ttyACM0 --cam-priority 4
+sudo ./dcc wlan0 wlan2 --cam-static --cam-priority 6
+sudo ./dcc wlan0 wlan2 --cam-gps /dev/ttyACM0 --cam-priority 4
 ```
 
 | User priority / TID | EDCA category |
@@ -231,8 +237,8 @@ recovery semantics. The sender needs no external client or feedback service.
 ## Optional DCC-MCO extension
 
 ```bash
-sudo ./dcc wlan0 wlan1 --dcc-net --cam-static
-sudo ./dcc wlan0 wlan1 --dcc-net --limeric --cam-gps /dev/ttyACM0
+sudo ./dcc wlan0 wlan2 --dcc-net --cam-static
+sudo ./dcc wlan0 wlan2 --dcc-net --limeric --cam-gps /dev/ttyACM0
 ```
 
 Without NET, the four SHB media-dependent bytes remain zero. With NET, the sender
@@ -263,3 +269,7 @@ uncertain-send failure. No radio is required for these tests.
 Validate full Linux builds, injection, queue mapping, bitrate application and
 airtime estimates against the intended driver and radio. The current
 implementation does not certify the complete ITS stack or hardware.
+
+See the [completed CAM capture report](../docs/cam-validation-2026-11-19.md)
+and the [field validation procedure](../docs/field-validation.md) for interpreting
+local TX statuses and checking reception on an independent node.

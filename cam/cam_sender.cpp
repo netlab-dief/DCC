@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <linux/if_ether.h>
 #include <net/if.h>
+#include <net/if_arp.h>
 #include <netpacket/packet.h>
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -112,8 +113,15 @@ void Sender::run() {
     destination.sll_halen = 6;
     std::memset(destination.sll_addr, 255, 6);
     checked(ioctl(radio.value, SIOCGIFHWADDR, &request) == 0, "CAM interface MAC");
+    if (request.ifr_hwaddr.sa_family != ARPHRD_IEEE80211_RADIOTAP)
+        throw std::runtime_error("CAM interface " + interface_ +
+            " is not a radiotap monitor; configure a monitor on the controlled ITS PHY");
     std::array<std::uint8_t, 6> mac{};
     std::memcpy(mac.data(), request.ifr_hwaddr.sa_data, mac.size());
+
+    checked(ioctl(radio.value, SIOCGIFFLAGS, &request) == 0, "CAM interface flags");
+    if (!(request.ifr_flags & IFF_UP))
+        throw std::runtime_error("CAM monitor interface " + interface_ + " is down");
 
     std::unique_ptr<Fd> serial;
     if (!options_.gps_device.empty()) {

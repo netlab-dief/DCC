@@ -3,8 +3,6 @@
 #include "common/bounded_io.h"
 #include <memory>
 #include <iostream>
-#include <cstdlib> // Necessario per std::system
-#include <sstream>
 
 RateManager::RateManager() : is_initialized_(false) {}
 
@@ -30,28 +28,7 @@ int RateManager::map_rate_index(int rate_idx) const {
 }
 
 void RateManager::set_fixed_rate(int rate_idx) {
-    if (!is_initialized_) {
-        ConsoleLine(std::cerr) << "\033[1;31m[RateManager] Errore: Istanza non inizializzata!\033[0m" << std::endl;
-        return;
-    }
-
-    // Otteniamo il numero Mbps (6, 12 o 24)
-    int bitrate_num = map_rate_index(rate_idx);
-
-    // Componiamo la stringa del comando esatto
-    std::stringstream ss;
-    ss << "sudo iw dev " << interface_ << " set bitrates legacy-5 " << bitrate_num << " > /dev/null 2>&1";
-    std::string command = ss.str();
-
-    // Eseguiamo il comando a livello di sistema operativo
-    int ret = std::system(command.c_str());
-
-    if (ret != 0) {
-        ConsoleLine(std::cerr) << "\033[1;31m[RateManager] Errore nell'esecuzione del comando: " << command << "\033[0m" << std::endl;
-    } else {
-        ConsoleLine() << "\033[1;32m[RateManager] Comando eseguito: iw dev " << interface_
-                  << " set bitrates legacy-5 " << bitrate_num << "\033[0m" << std::endl;
-    }
+    set_fixed_rate_netlink(rate_idx);
 }
 
 bool RateManager::set_fixed_rate_netlink(int rate_idx) {
@@ -94,6 +71,26 @@ bool RateManager::set_fixed_rate_netlink(int rate_idx) {
         return false;
     }
 
+    // OCB broadcast traffic uses the multicast rate, not the unicast mask.
+    int interface_type = -1;
+    if (nl_socket_modify_cb(socket, NL_CB_VALID, NL_CB_CUSTOM,
+        [](nl_msg* reply, void* data) -> int {
+            nlattr* attrs[NL80211_ATTR_MAX + 1] = {};
+            auto* header = static_cast<genlmsghdr*>(nlmsg_data(nlmsg_hdr(reply)));
+            if (nla_parse(attrs, NL80211_ATTR_MAX, genlmsg_attrdata(header, 0),
+                          genlmsg_attrlen(header, 0), nullptr) < 0) return NL_SKIP;
+            if (attrs[NL80211_ATTR_IFTYPE] &&
+                nla_len(attrs[NL80211_ATTR_IFTYPE]) == sizeof(uint32_t))
+                *static_cast<int*>(data) = nla_get_u32(attrs[NL80211_ATTR_IFTYPE]);
+            return NL_OK;
+        }, &interface_type) < 0) return false;
+    std::unique_ptr<nl_msg, decltype(&nlmsg_free)> query(nlmsg_alloc(), nlmsg_free);
+    if (!query || !genlmsg_put(query.get(), NL_AUTO_PORT, NL_AUTO_SEQ, driver_id,
+        0, NLM_F_REQUEST, NL80211_CMD_GET_INTERFACE, 0) ||
+        nla_put_u32(query.get(), NL80211_ATTR_IFINDEX, if_index) < 0) return false;
+    if (nl_send_sync(socket, query.release()) < 0 || interface_type < 0) return false;
+    const bool ocb = interface_type == NL80211_IFTYPE_OCB;
+
     // 4. Allocazione del messaggio Netlink principale
     std::unique_ptr<nl_msg, decltype(&nlmsg_free)> owned_msg(nlmsg_alloc(), nlmsg_free);
     auto* msg = owned_msg.get();
@@ -108,7 +105,7 @@ bool RateManager::set_fixed_rate_netlink(int rate_idx) {
                 driver_id, 
                 0, 
                 NLM_F_REQUEST, 
-                NL80211_CMD_SET_TX_BITRATE_MASK, 
+                ocb ? NL80211_CMD_SET_MCAST_RATE : NL80211_CMD_SET_TX_BITRATE_MASK,
                 0)) return false;
 
     // Aggiunta dell'indice dell'interfaccia target
@@ -118,8 +115,11 @@ bool RateManager::set_fixed_rate_netlink(int rate_idx) {
     bool serialization_success = false;
     
     // nl_rates = nla_nest_start(msg, NL80211_ATTR_TX_RATES);
-    struct nlattr* nl_rates = nla_nest_start(msg, NL80211_ATTR_TX_RATES);
-    if (nl_rates) {
+    struct nlattr* nl_rates = ocb ? nullptr : nla_nest_start(msg, NL80211_ATTR_TX_RATES);
+    if (ocb) {
+        // nl80211 multicast rates are expressed in units of 100 kbit/s.
+        serialization_success = nla_put_u32(msg, NL80211_ATTR_MCAST_RATE, bitrate_num * 10) >= 0;
+    } else if (nl_rates) {
         // nl_band = nla_nest_start(msg, NL80211_BAND_5GHZ);
         struct nlattr* nl_band = nla_nest_start(msg, NL80211_BAND_5GHZ);
         if (nl_band) {
@@ -147,11 +147,11 @@ bool RateManager::set_fixed_rate_netlink(int rate_idx) {
     // 8. Gestione del risultato ritornato dal kernel
     if (ret != 0) {
         ConsoleLine(std::cerr) << "\033[1;31m[RateManager][Netlink] Errore nell'impostare il bitrate: "
-                  << nl_geterror(ret) << "\033[0m" << std::endl;
+                  << interface_ << (ocb ? " (OCB multicast " : " (legacy-5 ") << bitrate_num << " Mbps): " << nl_geterror(ret) << "\033[0m" << std::endl;
         return false;
     } else {
         ConsoleLine() << "\033[1;32m[RateManager][Netlink] Bitrate impostato: " << interface_
-                  << " -> legacy-5 " << bitrate_num << " Mbps\033[0m" << std::endl;
+                  << (ocb ? " -> OCB multicast " : " -> legacy-5 ") << bitrate_num << " Mbps\033[0m" << std::endl;
     }
     return true;
 }
